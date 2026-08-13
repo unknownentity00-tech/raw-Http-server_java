@@ -33,13 +33,28 @@ public class HttpServer {
                 }
             }
           
+
+
+            
             // 2. Print the fully accumulated request, not a discarded partial string
             String fullRequest = accumulator.toString(StandardCharsets.UTF_8);
             System.out.println("Request:\n" + fullRequest);
             
-           
-            
+            String bodyText =  " hello welcome to my server";
+            byte[] bodybytes = bodyText.getBytes(StandardCharsets.UTF_8);
+            String header = "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: text/plain\r\n" +
+                    "Content-Length: " + bodybytes.length + "\r\n" +
+                    "\r\n";
+
+           byte[] headerBytes =header.getBytes(StandardCharsets.UTF_8);
+            outputStream.write(headerBytes);            
+            outputStream.write(bodybytes);
+
+            outputStream.flush();// Flush the output stream to ensure all data is sent
+
             clientSocket.close();
+            System.out.println("Response sent and client connection closed.");
         }
     }
 }
