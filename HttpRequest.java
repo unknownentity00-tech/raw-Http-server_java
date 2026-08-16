@@ -29,7 +29,10 @@ public class HttpRequest {
     public Map<String,  String > getHeaders() {
         return headers;
     }
-
+    public String getHeader(String name) {
+        if (headers == null || name == null) return null;
+        return headers.get(name.toLowerCase());
+    }
      public byte[] getBody(){
          return body;
      }
