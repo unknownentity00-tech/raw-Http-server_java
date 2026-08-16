@@ -19,14 +19,14 @@ public class HttpParser {
         return -1;
     }
     
-     public HttpRequest readRequest(InputStream inputStream) throws IOException {
+        public HttpRequest readRequest(InputStream inputStream) throws IOException {
         byte[] buffer = new byte[1024];
          
          
         ByteArrayOutputStream accumulator = new ByteArrayOutputStream();
         int bytesRead;
       
-             //sate trackers 
+        //sate trackers 
          boolean headersParsed = false;
          Integer contentLength = null;
          int boundaryIndex = -1;
@@ -38,11 +38,14 @@ public class HttpParser {
             if (!headersParsed) {
                 byte[] currentBytes = accumulator.toByteArray();
                 boundaryIndex = findHeaderBoundary(currentBytes);
-           if (boundaryIndex != -1) {
+            
+                if(boundaryIndex != -1){
                     headersParsed = true;
                     
                     // Safely extract ONLY headers to find Content-Length
-           String headersString = new String(currentBytes, 0, boundaryIndex, StandardCharsets.UTF_8);
+           String headersString = new String(currentBytes, 0, boundaryIndex,
+           StandardCharsets.UTF_8);
+
                     String[] headerLines = headersString.split("\r\n");
                     String targetHeader = "content-length:";
                     
@@ -121,3 +124,38 @@ public class HttpParser {
 
 
 }
+/*
+
+The Boundary Detector
+findHeaderBoundary(): Scans the raw byte array to pinpoint the exact starting index of the \r\n\r\n sequence.
+
+Phase 1: Stream Accumulation & Header Hunt
+buffer & accumulator: Initializes a dynamic memory bucket to catch fragmented TCP data chunks as they arrive.
+
+while (...): Continuously pulls raw bytes from the network socket until the loop explicitly breaks or the client disconnects.
+
+if (!headersParsed): Executes the sliding window search on the accumulator during every loop iteration until the boundary is found.
+
+headersParsed = true;: Locks the state machine into Phase 2, permanently stopping the boundary search for this specific request.
+
+for (String line : headerLines): Scans the text-converted headers specifically to extract the Content-Length integer to know how large the payload is.
+
+Phase 2: Body Accumulation
+if (headersParsed): Calculates exactly how many payload bytes have arrived immediately following the \r\n\r\n boundary.
+
+if (bodyBytesReceived >= expectedBodySize): Terminates the infinite network read loop the exact millisecond the required payload size is mathematically satisfied.
+
+Integrity Checks (Error Handling)
+if (boundaryIndex == -1): Kills the request if the client sent garbage and disconnected without ever providing valid HTTP headers.
+
+if (actualBodySize < expectedBodySize): Kills the request if the TCP connection dropped before transmitting the full payload declared in the headers.
+
+Data Extraction & Formatting
+System.arraycopy(...): Slices the payload body out of the accumulator strictly as raw bytes, preventing binary data corruption.
+
+requestLine.length != 3: Validates that the first HTTP line conforms strictly to the Method Path Protocol format.
+
+headersMap.put(...): Maps all headers into a dictionary, forcing keys to lowercase so future application lookups never fail due to capitalization errors.
+
+return new HttpRequest(...): Seals the extracted data into an immutable data transfer object to be safely read by the application layer.
+ */
