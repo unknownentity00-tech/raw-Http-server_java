@@ -36,25 +36,29 @@ public class HttpServer {
                         
                         // Convert byte[] body to String solely for console visibility
                         if (request.getBody() != null && request.getBody().length > 0) {
-                            String bodyString = new String(request.getBody(), StandardCharsets.UTF_8);
+                        String bodyString = new String(request.getBody(), StandardCharsets.UTF_8);
                             System.out.println("Body:     " + bodyString);
                         } else {
                             System.out.println("Body:     [Empty]");
                         }
                         System.out.println("===================");
-
+                     String responseText = "Server architecture upgraded successfully.\n";
                         // 8. Send the hardcoded 200 OK response
-                        String responseBody = "Server architecture upgraded successfully.\n";
-                        String httpResponse = 
-                            "HTTP/1.1 200 OK\r\n" +
-                            "Content-Type: text/plain\r\n" +
-                            "Content-Length: " + responseBody.length() + "\r\n" +
-                            "Connection: close\r\n" +
-                            "\r\n" +
-                            responseBody;
-
-                        output.write(httpResponse.getBytes(StandardCharsets.UTF_8));
-                        output.flush();
+                      byte[] responseBodyBytes = responseText.getBytes(StandardCharsets.UTF_8);
+                    
+                    String httpResponse = 
+                        "HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: text/plain\r\n" +
+                        "Content-Length: " + responseBodyBytes.length + "\r\n" + 
+                        // 2. Use exact byte length
+                        "Connection: close\r\n" +
+                        "\r\n" ;
+                    // 2. Convert headers to bytes
+                    byte[] headerBytes = httpResponse.getBytes(StandardCharsets.UTF_8);
+                       // 3. Write strictly as independent byte arrays
+                    output.write(headerBytes);
+                    output.write(responseBodyBytes);
+                    output.flush();
                     }
 
                 } catch (IOException e) {
