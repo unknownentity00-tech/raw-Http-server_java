@@ -104,7 +104,23 @@ public class NioHttpServer {
                 return;
             }
 
-            System.out.println("Read " + bytesRead + " bytes. Total buffer position: " + state.buffer.position());
+           // 2. THE FLIP: Lock the 'limit' at the current 'position', and reset 'position' to 0.
+            // This switches the buffer from "Write Mode" to "Read Mode".
+            state.readBuffer.flip();
+
+            // 3. Extract the exact number of bytes we just received.
+            byte[] chunk = new byte[state.readBuffer.remaining()];
+
+            state.readBuffer.get(chunk);
+
+            // 4. Append the fragment to the persistent memory block.
+            state.accumulator.write(chunk);
+
+            // 5. THE CLEAR: Reset 'position' to 0 and 'limit' to capacity.
+            // This switches the buffer back to "Write Mode" for the next OP_READ event.
+            state.readBuffer.clear();
+
+            System.out.println("Accumulated chunk of " + bytesRead + " bytes. Total client memory: " + state.accumulator.size() + " bytes.");
 
         } catch (IOException e) {
             System.err.println("Connection reset by peer.");
@@ -115,6 +131,20 @@ public class NioHttpServer {
         }
     }
 }
+/*
+If you allocate an 8192-byte buffer, and the OS delivers 100 bytes:
 
+After channel.read(): position = 100, limit = 8192.
+
+If you try to extract bytes now, it starts reading at index 100 (which is empty).
+
+After flip(): position = 0, limit = 100.
+
+Now, get() extracts exactly the 100 valid bytes and stops.
+
+After clear(): position = 0, limit = 8192.
+
+The buffer is wiped and ready for the next fragment.
+*/
 
 
