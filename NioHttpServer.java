@@ -33,6 +33,15 @@ public class NioHttpServer {
             return res;
         });
 
+        router.addRoute("POST", "/users", (HttpRequest request) -> {
+            HttpResponse res = new HttpResponse(201, "Created");
+            res.setBody("User creation endpoint");
+            return res;
+        });
+
+        router.addRoute("GET", "/crash", (HttpRequest request) -> {
+            throw new RuntimeException("Deliberate crash for testing 500 Internal Server Error");
+        });
         try {
             // 1. The Selector (The Traffic Cop)
             // This replaces your ExecutorService. It monitors multiple channels
