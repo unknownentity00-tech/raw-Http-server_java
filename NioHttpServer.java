@@ -122,62 +122,8 @@ public class NioHttpServer {
             state.readBuffer.clear();
 
             // --- HTTP COMPLETENESS CHECK ---
-            byte[] currentBytes = state.accumulator.toByteArray();
-
-            // Step A: Hunt for the \r\n\r\n boundary
-            if (!state.headersParsed) {
-                state.boundaryIndex = findHeaderBoundary(currentBytes);
-                
-                if (state.boundaryIndex != -1) {
-                    state.headersParsed = true;
-                    String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
-                    state.contentLength = extractContentLength(headers);
-                    
-                    if (state.contentLength == -1) {
-                        System.err.println("Protocol Violation: Malformed Content-Length.");
-                        state.malformedRequest = true;
-                        state.requestComplete = true; 
-                        
-                        // INTEGRATED: 400 Bad Request via HttpResponse
-                        HttpResponse response = new HttpResponse(400, "Bad Request");
-                        state.writeBuffer = response.toByteBuffer();
-                        key.interestOps(SelectionKey.OP_WRITE);
-                    } else  {
-                        System.out.println("Headers received. Boundary at index " + state.boundaryIndex + ", Content-Length: " + state.contentLength);
-                    }
-                }
-            }
-
-            // Step B: Body accumulation and parsing
-            if (state.headersParsed && !state.requestComplete && !state.malformedRequest) {
-                int expectedTotalBytes = state.boundaryIndex + 4 + state.contentLength; 
-                
-                if (currentBytes.length >= expectedTotalBytes) {
-                    state.requestComplete = true;
-                  
-                    try {
-                        HttpParser parser = new HttpParser();
-                        state.request = parser.parseRequest(currentBytes, state.boundaryIndex);
-                        
-                        // INTEGRATED: 200 OK via HttpResponse
-                        HttpResponse response = new HttpResponse(200, "OK");
-                        response.setBody("Hello NIO! You asked for: " + state.request.getPath());
-                        state.writeBuffer = response.toByteBuffer();
-                        
-                        key.interestOps(SelectionKey.OP_WRITE);
-                        
-                    } catch (Exception e) {
-                        System.err.println("Parser failed: " + e.getMessage());
-                        state.malformedRequest = true;
-                        
-                        // INTEGRATED: 500 Internal Server Error via HttpResponse
-                        HttpResponse response = new HttpResponse(500, "Internal Server Error");
-                        state.writeBuffer = response.toByteBuffer();
-                        
-                        key.interestOps(SelectionKey.OP_WRITE);
-                    }
-                }
-            }
+           processAccumulator(key, state, clientChannel);
+            
 
           } catch (IOException e) {
             System.err.println("Connection reset by peer.");
@@ -219,26 +165,93 @@ public class NioHttpServer {
         ClientState state = (ClientState) key.attachment();
 
         try {
-            // 1. Drain the buffer that handleRead already prepared
+            // 1. Actually transmit the bytes to the OS network buffer
             clientChannel.write(state.writeBuffer);
-
-            // 2. If the OS network buffer gets full, hasRemaining() is true.
-            // We return immediately and wait for the next OP_WRITE event.
-            if (state.writeBuffer.hasRemaining()) {
-                return; 
+            
+            if (state.request != null && state.request.isKeepAlive()) {
+                System.out.println("Response sent. Keeping connection alive.");
+                state.reset(); // Wipes HTTP state
+                
+                // --- PIPELINING TRAP FIX ---
+                // If bytes are left over, process them instantly. Do not wait for OP_READ.
+                if (state.accumulator.size() > 0) {
+                    processAccumulator(key, state, clientChannel);
+                    if (!state.requestComplete) {
+                         key.interestOps(SelectionKey.OP_READ);
+                    }
+                } else {
+                    key.interestOps(SelectionKey.OP_READ);
+                }
+            } else {
+                System.out.println("Response sent. Connection: close.");
+                clientChannel.close();
+                key.cancel();
             }
-
-            // 3. Buffer is mathematically empty. Safe to close.
-            System.out.println("Response fully sent. Closing connection.");
-            clientChannel.close();
-            key.cancel();
-
         } catch (IOException e) {
             System.err.println("Write failed: " + e.getMessage());
             try {
                 clientChannel.close();
                 key.cancel();
             } catch (IOException ignore) {}
+        }
+    }
+
+    private static void processAccumulator(SelectionKey key, ClientState state, SocketChannel clientChannel) throws IOException {
+        byte[] currentBytes = state.accumulator.toByteArray();
+
+        // Step A: Hunt for the \r\n\r\n boundary
+        if (!state.headersParsed) {
+            state.boundaryIndex = findHeaderBoundary(currentBytes);
+            
+            if (state.boundaryIndex != -1) {
+                state.headersParsed = true;
+                String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
+                state.contentLength = extractContentLength(headers);
+                
+                if (state.contentLength == -1) {
+                    state.malformedRequest = true;
+                    state.requestComplete = true; 
+                    HttpResponse response = new HttpResponse(400, "Bad Request");
+                    state.writeBuffer = response.toByteBuffer();
+                    key.interestOps(SelectionKey.OP_WRITE);
+                    return;
+                }
+            }
+        }
+
+        // Step B: Body accumulation and parsing
+        if (state.headersParsed && !state.requestComplete && !state.malformedRequest) {
+            int expectedTotalBytes = state.boundaryIndex + 4 + state.contentLength; 
+            
+            if (currentBytes.length >= expectedTotalBytes) {
+                state.requestComplete = true;
+                
+                // --- PHASE 4.3 PIPELINING: SLICE THE BYTES ---
+                byte[] exactRequestBytes = java.util.Arrays.copyOfRange(currentBytes, 0, expectedTotalBytes);
+                byte[] leftoverBytes = java.util.Arrays.copyOfRange(currentBytes, expectedTotalBytes, currentBytes.length);
+                
+                state.accumulator.reset(); 
+                try {
+                    state.accumulator.write(leftoverBytes);
+                } catch (IOException ignored) {}
+
+                try {
+                    HttpParser parser = new HttpParser();
+                    state.request = parser.parseRequest(exactRequestBytes, state.boundaryIndex);
+                    
+                    HttpResponse response = new HttpResponse(200, "OK");
+                    response.setBody("Hello NIO! You asked for: " + state.request.getPath());
+                    state.writeBuffer = response.toByteBuffer();
+                    
+                    key.interestOps(SelectionKey.OP_WRITE);
+                    
+                } catch (Exception e) {
+                    state.malformedRequest = true;
+                    HttpResponse response = new HttpResponse(500, "Internal Server Error");
+                    state.writeBuffer = response.toByteBuffer();
+                    key.interestOps(SelectionKey.OP_WRITE);
+                }
+            }
         }
     }
 }
