@@ -4,6 +4,7 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutorService;
 import java.nio.charset.StandardCharsets;
 
@@ -25,6 +26,26 @@ public class HttpServer {
             }
         } catch (IOException e) {
             System.err.println("Fatal server error: " + e.getMessage());
+        }finally{
+            //// This guarantees the thread pool is killed ,Stop accepting new tasks, but allow already-submitted tasks to finish.
+           
+            // 1. Stop accepting new tasks
+            threadPool.shutdown(); 
+            
+            try {
+                // 2. Wait up to 5 seconds for existing clients to finish
+                if (!threadPool.awaitTermination(5, TimeUnit.SECONDS)) {
+                    
+                    System.err.println("Workers did not terminate in time. Forcing shutdown...");
+                    // 3. Brutally interrupt any hanging threads
+                    threadPool.shutdownNow(); 
+                }
+            } catch (InterruptedException e) {
+                // 4. If the shutdown process itself is interrupted, force kill everything
+                threadPool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            System.out.println("Server fully terminated.");
         }
     }
 }

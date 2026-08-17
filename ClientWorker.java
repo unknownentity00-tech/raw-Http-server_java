@@ -18,8 +18,9 @@ public class ClientWorker implements Runnable {
         String threadName = Thread.currentThread().getName();
         
         try ( clientSocket; 
-             InputStream input = clientSocket.getInputStream();
-             OutputStream output = clientSocket.getOutputStream()) {
+
+            InputStream input = clientSocket.getInputStream();
+            OutputStream output = clientSocket.getOutputStream()) {
 
             System.out.println("Worker: " + threadName + " | Accepted connection.");
 
@@ -29,7 +30,7 @@ public class ClientWorker implements Runnable {
             System.out.println("Worker: " + threadName + " | Parsed " + request.getMethod() + " " + request.getPath());
 
             // 2.The Concurrency Test: Block this specific thread for 10 seconds
-            System.out.println("Worker: " + threadName + " | Simulating heavy load. Sleeping for 10s...");
+            System.out.println("Worker: " + threadName + " | Simulating heavy load. Sleeping for    10s...");
             Thread.sleep(10000);
             System.out.println("Worker: " + threadName + " | Awake. Sending response.");
 
@@ -55,7 +56,8 @@ public class ClientWorker implements Runnable {
         } catch (InterruptedException e) {
             // Required when using Thread.sleep()
             System.err.println("Worker " + threadName + " | Interrupted!");
-            Thread.currentThread().interrupt(); // Restore interrupt status
+            Thread.currentThread().interrupt(); 
+            // Restore interrupt status
         }
     }
 }
