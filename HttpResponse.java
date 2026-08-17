@@ -14,14 +14,16 @@ public class HttpResponse {
         this.statusMessage = statusMessage;
         
         // Add default headers
-        this.headers.put("Connection", "close");
+       this.headers.put("Connection", "keep-alive");
         this.headers.put("Content-Length", "0"); // Default until a body is set
     }
 
     public void addHeader(String key, String value) {
         this.headers.put(key, value);
     }
-
+      public void setKeepAlive(boolean keepAlive) {
+        this.headers.put("Connection", keepAlive ? "keep-alive" : "close");
+    }
     // Overload 1: For text/html bodies
     public void setBody(String bodyText) {
         byte[] bytes = bodyText.getBytes(StandardCharsets.UTF_8);
