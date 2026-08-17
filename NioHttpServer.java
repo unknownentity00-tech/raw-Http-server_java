@@ -97,7 +97,6 @@ public class NioHttpServer {
 
         try {
             int bytesRead = clientChannel.read(state.readBuffer);
-
             if (bytesRead == -1) {
                 System.out.println("Client disconnected cleanly.");
                 clientChannel.close();
@@ -109,42 +108,39 @@ public class NioHttpServer {
                 return;
             }
 
-           // 2. THE FLIP: Lock the 'limit' at the current 'position', and reset 'position' to 0.
-            // This switches the buffer from "Write Mode" to "Read Mode".
+            // 2. THE FLIP
             state.readBuffer.flip();
 
-            // 3. Extract the exact number of bytes we just received.
+            // 3. Extract bytes
             byte[] chunk = new byte[state.readBuffer.remaining()];
-
             state.readBuffer.get(chunk);
 
-            // 4. Append the fragment to the persistent memory block.
+            // 4. Accumulate
             state.accumulator.write(chunk);
 
-            // 5. THE CLEAR: Reset 'position' to 0 and 'limit' to capacity.
-            // This switches the buffer back to "Write Mode" for the next OP_READ event.
+            // 5. THE CLEAR
             state.readBuffer.clear();
 
-           // --- HTTP COMPLETENESS CHECK ---
+            // --- HTTP COMPLETENESS CHECK ---
             byte[] currentBytes = state.accumulator.toByteArray();
 
-            // Step A: Hunt for the \r\n\r\n boundary if we haven't found it yet
+            // Step A: Hunt for the \r\n\r\n boundary
             if (!state.headersParsed) {
                 state.boundaryIndex = findHeaderBoundary(currentBytes);
                 
                 if (state.boundaryIndex != -1) {
                     state.headersParsed = true;
-                    // Extract headers as a string to find Content-Length
-            String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
+                    String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
                     state.contentLength = extractContentLength(headers);
+                    
                     if (state.contentLength == -1) {
                         System.err.println("Protocol Violation: Malformed Content-Length.");
                         state.malformedRequest = true;
                         state.requestComplete = true; 
                         
-                        // NEW: Load the 400 error into the buffer and switch to OP_WRITE
-                        String responseString = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                        state.writeBuffer = ByteBuffer.wrap(responseString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        // INTEGRATED: 400 Bad Request via HttpResponse
+                        HttpResponse response = new HttpResponse(400, "Bad Request");
+                        state.writeBuffer = response.toByteBuffer();
                         key.interestOps(SelectionKey.OP_WRITE);
                     } else  {
                         System.out.println("Headers received. Boundary at index " + state.boundaryIndex + ", Content-Length: " + state.contentLength);
@@ -152,48 +148,38 @@ public class NioHttpServer {
                 }
             }
 
-            // Step B: If headers are known, check if the exact byte count for the body has arrived
+            // Step B: Body accumulation and parsing
             if (state.headersParsed && !state.requestComplete && !state.malformedRequest) {
-                int expectedTotalBytes = state.boundaryIndex + 4 + state.contentLength; // +4 accounts for \r\n\r\n
+                int expectedTotalBytes = state.boundaryIndex + 4 + state.contentLength; 
                 
                 if (currentBytes.length >= expectedTotalBytes) {
                     state.requestComplete = true;
                   
                     try {
-                        // 1. Instatiate the parser and extract the object
                         HttpParser parser = new HttpParser();
                         state.request = parser.parseRequest(currentBytes, state.boundaryIndex);
-                        // NEW: Build the 200 OK buffer ONCE, using strict byte length
-                       String body = "Hello NIO! You asked for: " + state.request.getPath();
-                       byte[] bodyBytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
                         
-                        String headers = "HTTP/1.1 200 OK\r\n" +
-                                         "Content-Type: text/plain; charset=UTF-8\r\n" +
-                                         "Content-Length: " + bodyBytes.length + "\r\n" +
-                                         "Connection: close\r\n\r\n";
-                        byte[] headerBytes = headers.getBytes(java.nio.charset.StandardCharsets.UTF_8);state.writeBuffer = ByteBuffer.allocate(headerBytes.length + bodyBytes.length);
-                        // Allocate exact capacity, write both parts, and flip for reading by the channel
-                        state.writeBuffer.put(headerBytes);
-                        state.writeBuffer.put(bodyBytes);
-                        state.writeBuffer.flip();
-                        // 2. Switch the OS interrupt from OP_READ to OP_WRITE
+                        // INTEGRATED: 200 OK via HttpResponse
+                        HttpResponse response = new HttpResponse(200, "OK");
+                        response.setBody("Hello NIO! You asked for: " + state.request.getPath());
+                        state.writeBuffer = response.toByteBuffer();
+                        
                         key.interestOps(SelectionKey.OP_WRITE);
                         
                     } catch (Exception e) {
-                     System.err.println("Parser failed: " + e.getMessage());
+                        System.err.println("Parser failed: " + e.getMessage());
                         state.malformedRequest = true;
                         
-                        // NEW: Load the 500 Internal Server Error into the buffer
-                        String responseString = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                        state.writeBuffer = ByteBuffer.wrap(responseString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        // INTEGRATED: 500 Internal Server Error via HttpResponse
+                        HttpResponse response = new HttpResponse(500, "Internal Server Error");
+                        state.writeBuffer = response.toByteBuffer();
                         
                         key.interestOps(SelectionKey.OP_WRITE);
                     }
-                    // The request is ready. Next step: transition to parsing/writing.
                 }
             }
 
-        } catch (IOException e) {
+          } catch (IOException e) {
             System.err.println("Connection reset by peer.");
             try {
                 clientChannel.close();
