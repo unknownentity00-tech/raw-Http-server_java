@@ -14,8 +14,9 @@ public class ClientState {
     // These dictate whether we are hunting for \r\n\r\n, calculating payload size, or finished reading.
     public boolean headersParsed = false;
     public int boundaryIndex = -1;
-    public Integer contentLength = null;
-
+    public Integer contentLength = 0;// Default to 0, safer than Integer wrapper
+    // NEW: The definitive flag signaling the request is ready for processing
+     public boolean requestComplete = false;
     // 4. The Outbound Queue
     // Once the request is fully assembled and parsed, the response bytes are placed here for OP_WRITE.
     public ByteBuffer writeBuffer = null;

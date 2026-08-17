@@ -120,7 +120,34 @@ public class NioHttpServer {
             // This switches the buffer back to "Write Mode" for the next OP_READ event.
             state.readBuffer.clear();
 
-            System.out.println("Accumulated chunk of " + bytesRead + " bytes. Total client memory: " + state.accumulator.size() + " bytes.");
+           // --- HTTP COMPLETENESS CHECK ---
+            byte[] currentBytes = state.accumulator.toByteArray();
+
+            // Step A: Hunt for the \r\n\r\n boundary if we haven't found it yet
+            if (!state.headersParsed) {
+                state.boundaryIndex = findHeaderBoundary(currentBytes);
+                
+                if (state.boundaryIndex != -1) {
+                    state.headersParsed = true;
+                    // Extract headers as a string to find Content-Length
+                    String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
+                    state.contentLength = extractContentLength(headers);
+                    
+                    System.out.println("Headers received. Boundary at index " + state.boundaryIndex + ", Content-Length: " + state.contentLength);
+                }
+            }
+
+            // Step B: If headers are known, check if the exact byte count for the body has arrived
+            if (state.headersParsed && !state.requestComplete) {
+                int expectedTotalBytes = state.boundaryIndex + 4 + state.contentLength; // +4 accounts for \r\n\r\n
+                
+                if (currentBytes.length >= expectedTotalBytes) {
+                    state.requestComplete = true;
+                    System.out.println("Request fully accumulated in memory. Expected: " + expectedTotalBytes + ", Actual: " + currentBytes.length);
+                    
+                    // The request is ready. Next step: transition to parsing/writing.
+                }
+            }
 
         } catch (IOException e) {
             System.err.println("Connection reset by peer.");
@@ -129,6 +156,32 @@ public class NioHttpServer {
                 key.cancel();
             } catch (IOException ignore) {}
         }
+    }
+    // Mathematically scans for the 4-byte HTTP header boundary sequence
+    private static int findHeaderBoundary(byte[] data) {
+        for (int i = 0; i < data.length - 3; i++) {
+            if (data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // Extracts the integer value of Content-Length if it exists
+    private static int extractContentLength(String headers) {
+        String lowerHeaders = headers.toLowerCase();
+        int idx = lowerHeaders.indexOf("content-length:");
+        if (idx != -1) {
+            int start = idx + 15;
+            int end = lowerHeaders.indexOf("\r\n", start);
+            if (end == -1) end = lowerHeaders.length();
+            try {
+                return Integer.parseInt(lowerHeaders.substring(start, end).trim());
+            } catch (NumberFormatException e) {
+                return 0;
+            }
+        }
+        return 0;
     }
 }
 /*
