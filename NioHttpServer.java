@@ -1,5 +1,5 @@
 
-    import java.io.IOException;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
@@ -167,7 +167,10 @@ public class NioHttpServer {
         try {
             // 1. Actually transmit the bytes to the OS network buffer
             clientChannel.write(state.writeBuffer);
-            
+            // 2. Check for partial writes
+            if (state.writeBuffer.hasRemaining()) {
+                return; // Yield thread
+            }
             if (state.request != null && state.request.isKeepAlive()) {
                 System.out.println("Response sent. Keeping connection alive.");
                 state.reset(); // Wipes HTTP state
