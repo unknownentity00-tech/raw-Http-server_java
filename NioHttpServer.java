@@ -1,6 +1,7 @@
 
     import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -59,6 +60,10 @@ public class NioHttpServer {
                         handleRead(key);
                         // readRequest(key);
                     }
+                   
+                    else if (key.isWritable()) {
+                     handleWrite(key);
+                                 }
                 }
             }
         } catch (IOException e) {
@@ -91,7 +96,7 @@ public class NioHttpServer {
         ClientState state = (ClientState) key.attachment();
 
         try {
-            int bytesRead = clientChannel.read(state.buffer);
+            int bytesRead = clientChannel.read(state.readBuffer);
 
             if (bytesRead == -1) {
                 System.out.println("Client disconnected cleanly.");
@@ -130,27 +135,60 @@ public class NioHttpServer {
                 if (state.boundaryIndex != -1) {
                     state.headersParsed = true;
                     // Extract headers as a string to find Content-Length
-                    String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
+            String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
                     state.contentLength = extractContentLength(headers);
                     if (state.contentLength == -1) {
-                        // VULNERABILITY MITIGATED
                         System.err.println("Protocol Violation: Malformed Content-Length.");
                         state.malformedRequest = true;
-                        state.requestComplete = true; // Stop reading immediately
-                    } else {
+                        state.requestComplete = true; 
+                        
+                        // NEW: Load the 400 error into the buffer and switch to OP_WRITE
+                        String responseString = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        state.writeBuffer = ByteBuffer.wrap(responseString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        key.interestOps(SelectionKey.OP_WRITE);
+                    } else  {
                         System.out.println("Headers received. Boundary at index " + state.boundaryIndex + ", Content-Length: " + state.contentLength);
                     }
                 }
             }
 
             // Step B: If headers are known, check if the exact byte count for the body has arrived
-            if (state.headersParsed && !state.requestComplete) {
+            if (state.headersParsed && !state.requestComplete && !state.malformedRequest) {
                 int expectedTotalBytes = state.boundaryIndex + 4 + state.contentLength; // +4 accounts for \r\n\r\n
                 
                 if (currentBytes.length >= expectedTotalBytes) {
                     state.requestComplete = true;
-                   System.out.println("Request fully accumulated in memory.");
-                    
+                  
+                    try {
+                        // 1. Instatiate the parser and extract the object
+                        HttpParser parser = new HttpParser();
+                        state.request = parser.parseRequest(currentBytes, state.boundaryIndex);
+                        // NEW: Build the 200 OK buffer ONCE, using strict byte length
+                       String body = "Hello NIO! You asked for: " + state.request.getPath();
+                       byte[] bodyBytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                        
+                        String headers = "HTTP/1.1 200 OK\r\n" +
+                                         "Content-Type: text/plain; charset=UTF-8\r\n" +
+                                         "Content-Length: " + bodyBytes.length + "\r\n" +
+                                         "Connection: close\r\n\r\n";
+                        byte[] headerBytes = headers.getBytes(java.nio.charset.StandardCharsets.UTF_8);state.writeBuffer = ByteBuffer.allocate(headerBytes.length + bodyBytes.length);
+                        // Allocate exact capacity, write both parts, and flip for reading by the channel
+                        state.writeBuffer.put(headerBytes);
+                        state.writeBuffer.put(bodyBytes);
+                        state.writeBuffer.flip();
+                        // 2. Switch the OS interrupt from OP_READ to OP_WRITE
+                        key.interestOps(SelectionKey.OP_WRITE);
+                        
+                    } catch (Exception e) {
+                     System.err.println("Parser failed: " + e.getMessage());
+                        state.malformedRequest = true;
+                        
+                        // NEW: Load the 500 Internal Server Error into the buffer
+                        String responseString = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        state.writeBuffer = ByteBuffer.wrap(responseString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        
+                        key.interestOps(SelectionKey.OP_WRITE);
+                    }
                     // The request is ready. Next step: transition to parsing/writing.
                 }
             }
@@ -188,6 +226,34 @@ public class NioHttpServer {
             }
         }
         return 0;
+    }
+    
+    private static void handleWrite(SelectionKey key) {
+        SocketChannel clientChannel = (SocketChannel) key.channel();
+        ClientState state = (ClientState) key.attachment();
+
+        try {
+            // 1. Drain the buffer that handleRead already prepared
+            clientChannel.write(state.writeBuffer);
+
+            // 2. If the OS network buffer gets full, hasRemaining() is true.
+            // We return immediately and wait for the next OP_WRITE event.
+            if (state.writeBuffer.hasRemaining()) {
+                return; 
+            }
+
+            // 3. Buffer is mathematically empty. Safe to close.
+            System.out.println("Response fully sent. Closing connection.");
+            clientChannel.close();
+            key.cancel();
+
+        } catch (IOException e) {
+            System.err.println("Write failed: " + e.getMessage());
+            try {
+                clientChannel.close();
+                key.cancel();
+            } catch (IOException ignore) {}
+        }
     }
 }
 /*

@@ -18,6 +18,7 @@ public class ClientState {
     // NEW: The definitive flag signaling the request is ready for processing
     public boolean malformedRequest = false;
      public boolean requestComplete = false;
+     public HttpRequest request = null;
     // 4. The Outbound Queue
     // Once the request is fully assembled and parsed, the response bytes are placed here for OP_WRITE.
     public ByteBuffer writeBuffer = null;

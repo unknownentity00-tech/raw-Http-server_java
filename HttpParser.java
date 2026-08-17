@@ -1,6 +1,7 @@
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.io.ByteArrayOutputStream;
@@ -19,6 +20,7 @@ public class HttpParser {
         return -1;
     }
     
+
         public HttpRequest readRequest(InputStream inputStream) throws IOException {
         byte[] buffer = new byte[1024];
          
@@ -121,7 +123,42 @@ public class HttpParser {
         return new HttpRequest(method, path, protocol, headersMap, bodyBytes);
      }
 
+   // --- ADD THIS NEW METHOD FOR PHASE 3 (NIO) ---
+    public HttpRequest parseRequest(byte[] requestBytes, int boundaryIndex) {
+        
+        // 1. Extract just the headers part as a String
+        String headerBlock = new String(requestBytes, 0, boundaryIndex, StandardCharsets.UTF_8);
 
+        // 2. Split the headerBlock into individual lines
+        String[] headerLines = headerBlock.split("\r\n");
+        
+        // 3. Parse Request Line (Index 0)
+        String[] requestLine = headerLines[0].split(" ");
+        if (requestLine.length != 3) {
+            throw new IllegalArgumentException("Malformed HTTP request line.");
+        }
+        String method = requestLine[0];
+        String path = requestLine[1];
+        String protocol = requestLine[2];
+
+        // 4. Parse Headers Map (Index 1 to end)
+        Map<String, String> headersMap = new HashMap<>();
+        for (int i = 1; i < headerLines.length; i++) {
+            String line = headerLines[i];
+            if (line.isEmpty()) continue;
+            
+            String[] parts = line.split(":", 2);
+            if (parts.length == 2) {
+                headersMap.put(parts[0].trim().toLowerCase(), parts[1].trim());
+            }
+        }
+
+        // 5. Extract the binary body (everything after \r\n\r\n)
+        byte[] bodyBytes = Arrays.copyOfRange(requestBytes, boundaryIndex + 4, requestBytes.length);
+
+        // 6. Construct and return your HttpRequest object
+        return new HttpRequest(method, path, protocol, headersMap, bodyBytes);
+    }
 
 }
 /*
