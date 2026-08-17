@@ -16,6 +16,7 @@ public class ClientState {
     public int boundaryIndex = -1;
     public Integer contentLength = 0;// Default to 0, safer than Integer wrapper
     // NEW: The definitive flag signaling the request is ready for processing
+    public boolean malformedRequest = false;
      public boolean requestComplete = false;
     // 4. The Outbound Queue
     // Once the request is fully assembled and parsed, the response bytes are placed here for OP_WRITE.

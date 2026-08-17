@@ -132,8 +132,14 @@ public class NioHttpServer {
                     // Extract headers as a string to find Content-Length
                     String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
                     state.contentLength = extractContentLength(headers);
-                    
-                    System.out.println("Headers received. Boundary at index " + state.boundaryIndex + ", Content-Length: " + state.contentLength);
+                    if (state.contentLength == -1) {
+                        // VULNERABILITY MITIGATED
+                        System.err.println("Protocol Violation: Malformed Content-Length.");
+                        state.malformedRequest = true;
+                        state.requestComplete = true; // Stop reading immediately
+                    } else {
+                        System.out.println("Headers received. Boundary at index " + state.boundaryIndex + ", Content-Length: " + state.contentLength);
+                    }
                 }
             }
 
@@ -143,7 +149,7 @@ public class NioHttpServer {
                 
                 if (currentBytes.length >= expectedTotalBytes) {
                     state.requestComplete = true;
-                    System.out.println("Request fully accumulated in memory. Expected: " + expectedTotalBytes + ", Actual: " + currentBytes.length);
+                   System.out.println("Request fully accumulated in memory.");
                     
                     // The request is ready. Next step: transition to parsing/writing.
                 }
@@ -178,7 +184,7 @@ public class NioHttpServer {
             try {
                 return Integer.parseInt(lowerHeaders.substring(start, end).trim());
             } catch (NumberFormatException e) {
-                return 0;
+                return -1;
             }
         }
         return 0;
