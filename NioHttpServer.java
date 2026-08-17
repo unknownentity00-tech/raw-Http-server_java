@@ -51,19 +51,19 @@ public class NioHttpServer {
                     }
 
                     // --- STEP 2: Handle New Connections ---
-                    if (key.isAcceptable()) {
+                    if (key.isValid() && key.isAcceptable()) {
                         acceptConnection(key, selector);
                     }
                     
-                    // --- STEP 3 & 4: Handle Incoming Bytes ---
-                    else if (key.isReadable()) {
+                    // --- STEP 3: Handle Incoming Bytes ---
+                    if (key.isValid() && key.isReadable()) {
                         handleRead(key);
-                        // readRequest(key);
                     }
                    
-                    else if (key.isWritable()) {
-                     handleWrite(key);
-                                 }
+                    // --- STEP 4: Handle Outgoing Bytes ---
+                    if (key.isValid() && key.isWritable()) {
+                        handleWrite(key);
+                    }
                 }
             }
         } catch (IOException e) {
