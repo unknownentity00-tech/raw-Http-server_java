@@ -56,6 +56,7 @@ public class NioHttpServer {
                     
                     // --- STEP 3 & 4: Handle Incoming Bytes ---
                     else if (key.isReadable()) {
+                        handleRead(key);
                         // readRequest(key);
                     }
                 }
@@ -77,10 +78,43 @@ public class NioHttpServer {
         clientChannel.configureBlocking(false);
         
         // Register the new client with the selector, but this time listen for bytes to READ
-        clientChannel.register(selector, SelectionKey.OP_READ);
+        // CRITICAL: We attach a dedicated ClientState object to this specific client's key.
+        // This is how the single thread remembers who is who when OP_READ fires.
+        clientChannel.register(selector, SelectionKey.OP_READ,new ClientState());
         
         System.out.println("Accepted non-blocking connection from " + clientChannel.getRemoteAddress());
     }
+
+    // 3. Read and Accumulate
+    private static void handleRead(SelectionKey key) {
+        SocketChannel clientChannel = (SocketChannel) key.channel();
+        ClientState state = (ClientState) key.attachment();
+
+        try {
+            int bytesRead = clientChannel.read(state.buffer);
+
+            if (bytesRead == -1) {
+                System.out.println("Client disconnected cleanly.");
+                clientChannel.close();
+                key.cancel();
+                return;
+            }
+
+            if (bytesRead == 0) {
+                return;
+            }
+
+            System.out.println("Read " + bytesRead + " bytes. Total buffer position: " + state.buffer.position());
+
+        } catch (IOException e) {
+            System.err.println("Connection reset by peer.");
+            try {
+                clientChannel.close();
+                key.cancel();
+            } catch (IOException ignore) {}
+        }
+    }
 }
+
 
 
