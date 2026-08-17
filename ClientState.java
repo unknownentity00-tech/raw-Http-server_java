@@ -14,7 +14,7 @@ public class ClientState {
     // These dictate whether we are hunting for \r\n\r\n, calculating payload size, or finished reading.
     public boolean headersParsed = false;
     public int boundaryIndex = -1;
-    public Integer contentLength = 0;// Default to 0, safer than Integer wrapper
+    public int  contentLength = 0;// Default to 0, safer than Integer wrapper
     // NEW: The definitive flag signaling the request is ready for processing
     public boolean malformedRequest = false;
      public boolean requestComplete = false;
@@ -22,6 +22,26 @@ public class ClientState {
     // 4. The Outbound Queue
     // Once the request is fully assembled and parsed, the response bytes are placed here for OP_WRITE.
     public ByteBuffer writeBuffer = null;
+
+// 5. Connection Lifecycle
+    public boolean keepAlive = true;
+
+    public void reset() {
+        this.headersParsed = false;
+        this.boundaryIndex = -1;
+        this.contentLength = 0;
+        this.requestComplete = false;
+        this.malformedRequest = false;
+        this.request = null;
+        this.writeBuffer = null;
+        this.keepAlive = true;
+        
+        // THE PIPELINING TRAP:
+        // We do NOT blindly do `accumulator.reset()` here.
+        // If a client sent Request 1 and Request 2 back-to-back in the same TCP packet,
+        // the accumulator already contains the bytes for Request 2! 
+        // We will need to slice the accumulator safely in the Reactor loop.
+    }
 }
 /*
 readBuffer: We must have a fixed ByteBuffer for channel.read(buffer) to use. But ByteBuffer has strict capacity limits and position trackers that are easily corrupted across multiple fragmented reads.

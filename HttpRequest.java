@@ -6,12 +6,15 @@ public class HttpRequest {
       private final String method ;
       private final  Map<String, String> headers;
 
-       HttpRequest(String method, String path , String  protocol , Map<String, String> headers, byte[] body) {
-       this.method = method;
-       this.path = path;
-       this.protocol = protocol;
-       this.headers = headers;
+      private final boolean keepAlive;
+
+     public HttpRequest(String method, String path, String protocol, Map<String, String> headers, byte[] body, boolean keepAlive) {
+        this.method = method;
+        this.path = path;
+        this.protocol = protocol;
+        this.headers = headers;
         this.body = body;
+        this.keepAlive = keepAlive;
     } 
     
     public String getMethod() {
@@ -36,5 +39,9 @@ public class HttpRequest {
      public byte[] getBody(){
          return body;
      }
-
+     public boolean isKeepAlive() {
+        return keepAlive;
+    }
 }
+
+

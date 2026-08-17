@@ -119,8 +119,21 @@ public class HttpParser {
                 headersMap.put(parts[0].trim().toLowerCase(), parts[1].trim());
             }
         }
+       boolean keepAlive = true;
+        if (protocol.equals("HTTP/1.0")) {
+            keepAlive = false; 
+        }
+        String connectionHeader = headersMap.get("connection");
+        if (connectionHeader != null) {
+            if (connectionHeader.equalsIgnoreCase("close")) {
+                keepAlive = false;
+            } else if (connectionHeader.equalsIgnoreCase("keep-alive")) {
+                keepAlive = true;
+            }
+        }
 
-        return new HttpRequest(method, path, protocol, headersMap, bodyBytes);
+        return new HttpRequest(method, path, protocol, headersMap, bodyBytes, keepAlive);
+  
      }
 
    // --- ADD THIS NEW METHOD FOR PHASE 3 (NIO) ---
@@ -156,8 +169,21 @@ public class HttpParser {
         // 5. Extract the binary body (everything after \r\n\r\n)
         byte[] bodyBytes = Arrays.copyOfRange(requestBytes, boundaryIndex + 4, requestBytes.length);
 
+        // Keep-Alive Logic mapped directly from headers
+        boolean keepAlive = true; 
+        if (protocol.equals("HTTP/1.0")) {
+            keepAlive = false;
+        }
+        String connectionHeader = headersMap.get("connection");
+        if (connectionHeader != null) {
+            if (connectionHeader.equalsIgnoreCase("close")) {
+                keepAlive = false;
+            } else if (connectionHeader.equalsIgnoreCase("keep-alive")) {
+                keepAlive = true;
+            }
+        }
         // 6. Construct and return your HttpRequest object
-        return new HttpRequest(method, path, protocol, headersMap, bodyBytes);
+        return new HttpRequest(method, path, protocol, headersMap, bodyBytes, keepAlive);
     }
 
 }
