@@ -14,6 +14,23 @@ public class HttpServer {
         int port = 8080;
         ExecutorService threadPool = Executors.newFixedThreadPool(4);
 
+        // --- NEW: The JVM Shutdown Hook ---
+        // This intercepts Ctrl+C and OS kill signals to enforce graceful shutdown
+
+       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("\n[Shutdown Hook] Intercepted kill signal. Initiating graceful shutdown...");
+            threadPool.shutdown();
+            try {
+                if (!threadPool.awaitTermination(5, TimeUnit.SECONDS)) {
+                    System.err.println("[Shutdown Hook] Workers did not terminate in time. Forcing shutdown...");
+                    threadPool.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                threadPool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            System.out.println("[Shutdown Hook] Server fully terminated.");
+        }));
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("Server listening on port " + port);
 
@@ -26,7 +43,13 @@ public class HttpServer {
             }
         } catch (IOException e) {
             System.err.println("Fatal server error: " + e.getMessage());
-        }finally{
+        }
+
+         // Note: The finally block is removed because the Shutdown
+         // Hook now guarantees execution.
+
+
+        /*finally{
             //// This guarantees the thread pool is killed ,Stop accepting new tasks, but allow already-submitted tasks to finish.
            
             // 1. Stop accepting new tasks
@@ -46,6 +69,18 @@ public class HttpServer {
                 Thread.currentThread().interrupt();
             }
             System.out.println("Server fully terminated.");
-        }
+        }*/
     }
 }
+//executer lifestyle 
+
+/*
+. What does shutdown() do?
+It alters the state of the ExecutorService. It immediately rejects any new submit() calls. However, it is non-blocking. It allows the current workers to finish their active tasks, and it allows any tasks currently waiting in the queue to begin and finish. The main thread continues executing the next line of code instantly.
+
+2. What does awaitTermination() do?
+It is a blocking operation. It halts the main thread at that exact line of code and waits for a specific duration (e.g., 5 seconds). It waits for shutdown() to completely finish processing all active and queued tasks.
+
+3. What happens if workers do not terminate in time?
+If the 5 seconds expire and Worker-1 is still stuck processing a slow client, awaitTermination() unblocks and returns false. At this point, the graceful shutdown has failed. You are forced to call shutdownNow(), which sends a hardware interrupt to the remaining threads, brutally killing their network streams to prevent the server from hanging indefinitely. 
+*/
