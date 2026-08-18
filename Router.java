@@ -24,9 +24,9 @@ public class Router {
         // --- PHASE 5.3: HANDLE OPTIONS METHOD ---
         if (method.equals("OPTIONS")) {
             HttpResponse response = new HttpResponse(200, "OK");
-            String allowedMethods = String.join(", ", pathRoutes.keySet());
+            String allowedMethods = getImplicitAllowedMethods(pathRoutes); // <-- UPDATED HERE
             response.addHeader("Allow", allowedMethods);
-            response.setBody(""); // OPTIONS typically returns an empty body or description
+            response.setBody(""); 
             return response;
         }
 
@@ -41,7 +41,7 @@ public class Router {
         if (handler == null) {
             HttpResponse response = new HttpResponse(405, "Method Not Allowed");
             //  Dynamically calculate and inject the Allow header ---
-            String allowedMethods = String.join(", ", pathRoutes.keySet());
+            String allowedMethods = getImplicitAllowedMethods(pathRoutes);
             response.addHeader("Allow", allowedMethods);
             
             response.setBody("405: Method " + method + " is not allowed for " + path + ".\nAllowed: " + allowedMethods);
@@ -54,10 +54,13 @@ public class Router {
             // --- PHASE 5.3: STRIP BODY FOR HEAD REQUESTS (Keep Content-Length intact) ---
             if (request.getMethod().equalsIgnoreCase("HEAD")) {
                 // Ensure Content-Length header is set based on the original body length before clearing it
-                if (response.getBodyBytes() != null) {
-                    response.addHeader("Content-Length", String.valueOf(response.getBodyBytes().length));
+               
+                 if (response.getBodyBytes() != null) {
+                    // Content-Length was already calculated by setBody(), just clear the payload bytes
+                    response.clearBodyForHead();
                 }
-                response.setBody(""); // Clear body bytes for HEAD response
+                
+               // Clear body bytes for HEAD response
             }
            return response;
         } catch (Exception e) {
@@ -67,4 +70,13 @@ public class Router {
             return response;
         }
 }
+private String getImplicitAllowedMethods(Map<String, RouteHandler> pathRoutes) {
+        java.util.Set<String> methods = new java.util.LinkedHashSet<>(pathRoutes.keySet());
+        // If GET is supported, implicitly support HEAD and OPTIONS
+        if (methods.contains("GET")) {
+            methods.add("HEAD");
+        }
+        methods.add("OPTIONS");
+        return String.join(", ", methods);
+    }
 }

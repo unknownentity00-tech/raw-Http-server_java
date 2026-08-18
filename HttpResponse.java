@@ -30,7 +30,10 @@ public class HttpResponse {
         setBody(bytes);
         addHeader("Content-Type", "text/plain; charset=UTF-8");
     }
-
+    // Clears the body bytes for HEAD requests without resetting the Content-Length header
+    public void clearBodyForHead() {
+        this.bodyBytes = new byte[0];
+    }
     public byte[] getBodyBytes() {
         return this.bodyBytes;
     }
