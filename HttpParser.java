@@ -10,16 +10,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 
 
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-
 
 public class HttpParser {
     
@@ -36,6 +26,8 @@ public class HttpParser {
         return -1;
     }
     
+private static final int MAX_HEADERS_COUNT = 100;
+    private static final int MAX_SINGLE_HEADER_SIZE = 8 * 1024;
 
         public HttpRequest readRequest(InputStream inputStream) throws IOException {
         byte[] buffer = new byte[1024];
@@ -164,8 +156,11 @@ public class HttpParser {
         if (lines.length == 0) {
             throw new IllegalArgumentException("Malformed Request: Empty request line");
         }
-
-        // 3. Validate Request Line Components (Must be exactly 3: Method Path Version)
+// 3. Validate Header Count Limit
+        if (lines.length > MAX_HEADERS_COUNT) {
+            throw new IllegalArgumentException("Payload Too Large: Exceeded maximum allowed header count (" + MAX_HEADERS_COUNT + ")");
+        }
+        // 4. Validate Request Line Components (Must be exactly 3: Method Path Version)
         String requestLine = lines[0];
         String[] requestLineParts = requestLine.split(" ");
         if (requestLineParts.length != 3) {
@@ -194,11 +189,14 @@ public class HttpParser {
         // 7. Parse and Validate Headers strictly
         Map<String, String> headersMap = new HashMap<>();
         boolean contentLengthFound = false; // Guard against duplicate Content-Length
-
+        boolean hostHeaderFound = false;
         for (int i = 1; i < lines.length; i++) {
             String line = lines[i];
             if (line.isEmpty()) continue;
 
+            if (line.length() > MAX_SINGLE_HEADER_SIZE) {
+                throw new IllegalArgumentException("Request Header Fields Too Large.");
+            }
             // Every header line must contain a colon ':'
             int colonIndex = line.indexOf(':');
             if (colonIndex == -1) {
@@ -215,7 +213,17 @@ public class HttpParser {
             if (headerName.isEmpty()) {
                 throw new IllegalArgumentException("Malformed Header Line: Header name cannot be empty.");
             }
+            
+            if (headerName.equalsIgnoreCase("Host")) {
+                if (hostHeaderFound) {
+                    throw new IllegalArgumentException("Duplicate Host header detected.");
+                }
+                hostHeaderFound = true;
+            }
 
+            if (headerName.equalsIgnoreCase("Transfer-Encoding")) {
+                throw new IllegalArgumentException("Transfer-Encoding is not accepted.");
+            }
             // Check for duplicate Content-Length and validate its numeric value
             if (headerName.equalsIgnoreCase("Content-Length")) {
                 if (contentLengthFound) {
@@ -235,7 +243,13 @@ public class HttpParser {
 
             headersMap.put(headerName.toLowerCase(), headerValue);
         }
+            
+      
+        if (!hostHeaderFound) {
+            throw new IllegalArgumentException("Missing mandatory Host header");
+        }
 
+       
         // 8. Extract the binary body (everything after \r\n\r\n)
         byte[] bodyBytes = Arrays.copyOfRange(requestBytes, boundaryIndex + 4, requestBytes.length);
 
