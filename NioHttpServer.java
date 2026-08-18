@@ -261,6 +261,7 @@ public class NioHttpServer {
                 key.interestOps(SelectionKey.OP_WRITE);
                 return;
             }
+            state.boundaryIndex = findHeaderBoundary(currentBytes);
             if (state.boundaryIndex != -1) {
                 state.headersParsed = true;
                 String headers = new String(currentBytes, 0, state.boundaryIndex,
