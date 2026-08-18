@@ -8,7 +8,7 @@ public class HttpResponse {
     private final String statusMessage;
     private final Map<String, String> headers = new HashMap<>();
     private byte[] bodyBytes;
-
+    private int contentLength = 0;
     public HttpResponse(int statusCode, String statusMessage) {
         this.statusCode = statusCode;
         this.statusMessage = statusMessage;
@@ -38,17 +38,21 @@ public class HttpResponse {
     }
     // Clears the body bytes for HEAD requests without resetting the Content-Length header
     public void clearBodyForHead() {
-        this.bodyBytes = new byte[0];
+        this.bodyBytes = null; // Do not transmit body bytes
+        // contentLength remains whatever setBody() originally calculated
+    }
+    // Overload 2: For binary/raw byte bodies (preserves exact payload)
+
+    public void setBody(byte[] bodyBytes) {
+        this.bodyBytes = bodyBytes;
+        this.contentLength = (bodyBytes != null) ? bodyBytes.length : 0;
+        addHeader("Content-Length", String.valueOf(this.contentLength));
     }
     public byte[] getBodyBytes() {
         return this.bodyBytes;
     }
     // Overload 2: For binary/raw byte bodies (preserves exact payload)
-    public void setBody(byte[] bodyBytes) {
-        this.bodyBytes = bodyBytes;
-        // Mathematically guarantee Content-Length matches the byte payload
-        addHeader("Content-Length", String.valueOf(bodyBytes.length));
-    }
+    
 
     // The NIO Integration Method
     public ByteBuffer toByteBuffer() {
@@ -57,9 +61,10 @@ public class HttpResponse {
         // 1. Status Line
         headerBuilder.append("HTTP/1.1 ").append(statusCode).append(" ").append(statusMessage).append("\r\n");
    
-        int bodyLength = (bodyBytes != null) ? bodyBytes.length : 0;
-        headers.put("Content-Length", String.valueOf(bodyLength));
-             // 2. Headers
+        // Use the preserved contentLength field instead of recalculating from bodyBytes
+        headers.put("Content-Length", String.valueOf(this.contentLength));
+
+        // 2. Headers
         for (Map.Entry<String, String> entry : headers.entrySet()) {
             headerBuilder.append(entry.getKey()).append(": ").append(entry.getValue()).append("\r\n");
         }
@@ -69,14 +74,16 @@ public class HttpResponse {
 
         byte[] headerBytes = headerBuilder.toString().getBytes(StandardCharsets.UTF_8);
 
-        // 4. Allocate exact capacity
-        ByteBuffer buffer = ByteBuffer.allocate(headerBytes.length + bodyLength);
+        // 4. Allocate exact capacity (bodyBytes is null/empty for HEAD, so 0 body bytes are written)
+        int bodyLengthToWrite = (bodyBytes != null) ? bodyBytes.length : 0;
+        ByteBuffer buffer = ByteBuffer.allocate(headerBytes.length + bodyLengthToWrite);
         buffer.put(headerBytes);
         
-        if (bodyBytes != null && bodyLength > 0) {
+        if (bodyBytes != null && bodyLengthToWrite > 0) {
             buffer.put(bodyBytes);
         }
-        // 5. Flip buffer for channel reading (Write Mode to Read Mode)
+        
+        // 5. Flip buffer for channel reading
         buffer.flip();
         return buffer;
     }
