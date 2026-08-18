@@ -17,7 +17,13 @@ public class HttpResponse {
        this.headers.put("Connection", "keep-alive");
         this.headers.put("Content-Length", "0"); // Default until a body is set
     }
-
+// --- PHASE 5.4: CENTRALIZED ERROR RESPONSE FACTORIES ---
+    public static HttpResponse createErrorResponse(int statusCode, String statusMessage) {
+        HttpResponse response = new HttpResponse(statusCode, statusMessage);
+        response.setKeepAlive(false); // Errors default to closing connection unless specified otherwise
+        response.setBody(statusCode + ": " + statusMessage);
+        return response;
+    }
     public void addHeader(String key, String value) {
         this.headers.put(key, value);
     }
@@ -50,8 +56,10 @@ public class HttpResponse {
         
         // 1. Status Line
         headerBuilder.append("HTTP/1.1 ").append(statusCode).append(" ").append(statusMessage).append("\r\n");
-        
-        // 2. Headers
+   
+        int bodyLength = (bodyBytes != null) ? bodyBytes.length : 0;
+        headers.put("Content-Length", String.valueOf(bodyLength));
+             // 2. Headers
         for (Map.Entry<String, String> entry : headers.entrySet()) {
             headerBuilder.append(entry.getKey()).append(": ").append(entry.getValue()).append("\r\n");
         }
@@ -59,19 +67,16 @@ public class HttpResponse {
         // 3. Blank line separating headers from body
         headerBuilder.append("\r\n");
 
-        // Convert the entire header block to bytes
         byte[] headerBytes = headerBuilder.toString().getBytes(StandardCharsets.UTF_8);
-        int bodyLength = (bodyBytes != null) ? bodyBytes.length : 0;
 
         // 4. Allocate exact capacity
         ByteBuffer buffer = ByteBuffer.allocate(headerBytes.length + bodyLength);
         buffer.put(headerBytes);
         
-        if (bodyBytes != null) {
+        if (bodyBytes != null && bodyLength > 0) {
             buffer.put(bodyBytes);
         }
-
-        // 5. Flip the buffer so it is in "Read Mode" for the SocketChannel
+        // 5. Flip buffer for channel reading (Write Mode to Read Mode)
         buffer.flip();
         return buffer;
     }
