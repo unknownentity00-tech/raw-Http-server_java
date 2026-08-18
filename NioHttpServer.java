@@ -10,7 +10,8 @@ import java.util.Iterator;
 import java.util.Set;
 
 public class NioHttpServer {
-
+    private static final int MAX_HEADER_SIZE = 16 * 1024;         // 16 KB
+    private static final int MAX_BODY_SIZE = 10 * 1024 * 1024;    // 10 MB
     public static void main(String[] args) {
         int port = 8080;
         Router router = new Router();
@@ -244,10 +245,22 @@ public class NioHttpServer {
             Router router) throws IOException {
         byte[] currentBytes = state.accumulator.toByteArray();
 
-        // Step A: Hunt for the \r\n\r\n boundary
+     
+       // Step A: Hunt for the \r\n\r\n boundary and enforce MAX_HEADER_SIZE
         if (!state.headersParsed) {
-            state.boundaryIndex = findHeaderBoundary(currentBytes);
-
+            if (currentBytes.length > MAX_HEADER_SIZE) {
+                System.err.println("Security Alert: Header size exceeded 16 KB limit.");
+                state.malformedRequest = true;
+                state.requestComplete = true;
+                
+                HttpResponse response = new HttpResponse(431, "Request Header Fields Too Large");
+                response.setKeepAlive(false);
+                response.setBody("431: Request Header Fields Too Large");
+                
+                state.writeBuffer = response.toByteBuffer();
+                key.interestOps(SelectionKey.OP_WRITE);
+                return;
+            }
             if (state.boundaryIndex != -1) {
                 state.headersParsed = true;
                 String headers = new String(currentBytes, 0, state.boundaryIndex,
@@ -265,47 +278,72 @@ public class NioHttpServer {
             }
         }
 
-        // Step B: Body accumulation and parsing
-        if (state.headersParsed && !state.requestComplete && !state.malformedRequest) {
-            int expectedTotalBytes = state.boundaryIndex + 4 + state.contentLength;
+       if (state.headersParsed && !state.requestComplete && !state.malformedRequest) {
+            
+            if (state.contentLength > MAX_BODY_SIZE) {
+                System.err.println("Security Alert: Declared body size exceeds 10 MB limit.");
+                state.malformedRequest = true;
+                state.requestComplete = true;
+                
+                HttpResponse response = new HttpResponse(413, "Payload Too Large");
+                response.setKeepAlive(false);
+                response.setBody("413: Payload Too Large");
+                
+                state.writeBuffer = response.toByteBuffer();
+                key.interestOps(SelectionKey.OP_WRITE);
+                return;
+            }
+
+            int expectedTotalBytes = state.boundaryIndex + 4 + state.contentLength; 
+            
+            if (currentBytes.length > (state.boundaryIndex + 4 + MAX_BODY_SIZE)) {
+                System.err.println("Security Alert: Actual stream payload exceeded 10 MB limit.");
+                state.malformedRequest = true;
+                state.requestComplete = true;
+                
+                HttpResponse response = new HttpResponse(413, "Payload Too Large");
+                response.setKeepAlive(false);
+                response.setBody("413: Payload Too Large");
+                
+                state.writeBuffer = response.toByteBuffer();
+                key.interestOps(SelectionKey.OP_WRITE);
+                return;
+            }
 
             if (currentBytes.length >= expectedTotalBytes) {
                 state.requestComplete = true;
-
-                // --- PHASE 4.3 PIPELINING: SLICE THE BYTES ---
+                
                 byte[] exactRequestBytes = java.util.Arrays.copyOfRange(currentBytes, 0, expectedTotalBytes);
-                byte[] leftoverBytes = java.util.Arrays.copyOfRange(currentBytes, expectedTotalBytes,
-                        currentBytes.length);
-
-                state.accumulator.reset();
+                byte[] leftoverBytes = java.util.Arrays.copyOfRange(currentBytes, expectedTotalBytes, currentBytes.length);
+                
+                state.accumulator.reset(); 
                 try {
                     state.accumulator.write(leftoverBytes);
-                } catch (IOException ignored) {
-                }
+                } catch (IOException ignored) {}
 
                 try {
                     HttpParser parser = new HttpParser();
                     state.request = parser.parseRequest(exactRequestBytes, state.boundaryIndex);
-
-                    // --- PHASE 5: Delegate to the Application Layer ---
+                    
                     HttpResponse response = router.route(state.request);
-
-                    // Synchronize the Keep-Alive state
                     response.setKeepAlive(state.request.isKeepAlive());
-
+                    
                     state.writeBuffer = response.toByteBuffer();
                     key.interestOps(SelectionKey.OP_WRITE);
-
+                    
                 } catch (Exception e) {
                     state.malformedRequest = true;
                     HttpResponse response = new HttpResponse(500, "Internal Server Error");
+                    response.setKeepAlive(false);
+                    response.setBody("500: Internal Server Error");
                     state.writeBuffer = response.toByteBuffer();
                     key.interestOps(SelectionKey.OP_WRITE);
                 }
             }
         }
-    }
+    }    
 }
+
 /*
  * If you allocate an 8192-byte buffer, and the OS delivers 100 bytes:
  * 

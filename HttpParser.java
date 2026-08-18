@@ -3,13 +3,29 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+
+
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 
 
 public class HttpParser {
-   
+    
+   private static final Set<String> SUPPORTED_METHODS = new HashSet<>(Arrays.asList("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"));
+    private static final String SUPPORTED_VERSION = "HTTP/1.1";
+
     // Strict byte-level boundary detector (now static)
     private static int findHeaderBoundary(byte[] data) {
         for (int i = 0; i < data.length - 3; i++) {
@@ -136,37 +152,88 @@ public class HttpParser {
   
      }
 
-   // --- ADD THIS NEW METHOD FOR PHASE 3 (NIO) ---
+   // --- PHASE 5.1 HARDENED NIO PARSE REQUEST ---
     public HttpRequest parseRequest(byte[] requestBytes, int boundaryIndex) {
         
         // 1. Extract just the headers part as a String
         String headerBlock = new String(requestBytes, 0, boundaryIndex, StandardCharsets.UTF_8);
 
         // 2. Split the headerBlock into individual lines
-        String[] headerLines = headerBlock.split("\r\n");
+        String[] lines = headerBlock.split("\r\n");
         
-        // 3. Parse Request Line (Index 0)
-        String[] requestLine = headerLines[0].split(" ");
-        if (requestLine.length != 3) {
-            throw new IllegalArgumentException("Malformed HTTP request line.");
+        if (lines.length == 0) {
+            throw new IllegalArgumentException("Malformed Request: Empty request line");
         }
-        String method = requestLine[0];
-        String path = requestLine[1];
-        String protocol = requestLine[2];
 
-        // 4. Parse Headers Map (Index 1 to end)
+        // 3. Validate Request Line Components (Must be exactly 3: Method Path Version)
+        String requestLine = lines[0];
+        String[] requestLineParts = requestLine.split(" ");
+        if (requestLineParts.length != 3) {
+            throw new IllegalArgumentException("Malformed Request Line: Must have exactly 3 components. Found: " + requestLineParts.length);
+        }
+
+        String method = requestLineParts[0];
+        String path = requestLineParts[1];
+        String protocol = requestLineParts[2];
+
+        // 4. Validate Method against supported set
+        if (!SUPPORTED_METHODS.contains(method.toUpperCase())) {
+            throw new IllegalArgumentException("Unsupported or Invalid HTTP Method: " + method);
+        }
+
+        // 5. Validate Path (Must start with '/' and not be empty)
+        if (path == null || path.isEmpty() || !path.startsWith("/")) {
+            throw new IllegalArgumentException("Invalid Request Path: " + path);
+        }
+
+        // 6. Validate HTTP Version
+        if (!protocol.equalsIgnoreCase(SUPPORTED_VERSION)) {
+            throw new IllegalArgumentException("Unsupported HTTP Version: " + protocol + ". Expected HTTP/1.1");
+        }
+
+        // 7. Parse and Validate Headers strictly
         Map<String, String> headersMap = new HashMap<>();
-        for (int i = 1; i < headerLines.length; i++) {
-            String line = headerLines[i];
+        boolean contentLengthFound = false; // Guard against duplicate Content-Length
+
+        for (int i = 1; i < lines.length; i++) {
+            String line = lines[i];
             if (line.isEmpty()) continue;
-            
-            String[] parts = line.split(":", 2);
-            if (parts.length == 2) {
-                headersMap.put(parts[0].trim().toLowerCase(), parts[1].trim());
+
+            // Every header line must contain a colon ':'
+            int colonIndex = line.indexOf(':');
+            if (colonIndex == -1) {
+                throw new IllegalArgumentException("Malformed Header Line (Missing colon): " + line);
             }
+
+            String headerName = line.substring(0, colonIndex).trim();
+            String headerValue = line.substring(colonIndex + 1).trim();
+
+            // Header name must be non-empty
+            if (headerName.isEmpty()) {
+                throw new IllegalArgumentException("Malformed Header Line: Header name cannot be empty.");
+            }
+
+            // Check for duplicate Content-Length and validate its numeric value
+            if (headerName.equalsIgnoreCase("Content-Length")) {
+                if (contentLengthFound) {
+                    throw new IllegalArgumentException("Malformed Request: Duplicate Content-Length header detected.");
+                }
+                contentLengthFound = true;
+
+                try {
+                    long contentLength = Long.parseLong(headerValue);
+                    if (contentLength < 0) {
+                        throw new IllegalArgumentException("Invalid Content-Length: Value cannot be negative.");
+                    }
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("Invalid Content-Length: Not a valid numeric value.");
+                }
+            }
+
+            headersMap.put(headerName.toLowerCase(), headerValue);
         }
 
-        // 5. Extract the binary body (everything after \r\n\r\n)
+        // 8. Extract the binary body (everything after \r\n\r\n)
         byte[] bodyBytes = Arrays.copyOfRange(requestBytes, boundaryIndex + 4, requestBytes.length);
 
         // Keep-Alive Logic mapped directly from headers
@@ -182,43 +249,8 @@ public class HttpParser {
                 keepAlive = true;
             }
         }
-        // 6. Construct and return your HttpRequest object
+        
+        // 9. Construct and return your HttpRequest object
         return new HttpRequest(method, path, protocol, headersMap, bodyBytes, keepAlive);
     }
-
 }
-/*
-
-The Boundary Detector
-findHeaderBoundary(): Scans the raw byte array to pinpoint the exact starting index of the \r\n\r\n sequence.
-
-Phase 1: Stream Accumulation & Header Hunt
-buffer & accumulator: Initializes a dynamic memory bucket to catch fragmented TCP data chunks as they arrive.
-
-while (...): Continuously pulls raw bytes from the network socket until the loop explicitly breaks or the client disconnects.
-
-if (!headersParsed): Executes the sliding window search on the accumulator during every loop iteration until the boundary is found.
-
-headersParsed = true;: Locks the state machine into Phase 2, permanently stopping the boundary search for this specific request.
-
-for (String line : headerLines): Scans the text-converted headers specifically to extract the Content-Length integer to know how large the payload is.
-
-Phase 2: Body Accumulation
-if (headersParsed): Calculates exactly how many payload bytes have arrived immediately following the \r\n\r\n boundary.
-
-if (bodyBytesReceived >= expectedBodySize): Terminates the infinite network read loop the exact millisecond the required payload size is mathematically satisfied.
-
-Integrity Checks (Error Handling)
-if (boundaryIndex == -1): Kills the request if the client sent garbage and disconnected without ever providing valid HTTP headers.
-
-if (actualBodySize < expectedBodySize): Kills the request if the TCP connection dropped before transmitting the full payload declared in the headers.
-
-Data Extraction & Formatting
-System.arraycopy(...): Slices the payload body out of the accumulator strictly as raw bytes, preventing binary data corruption.
-
-requestLine.length != 3: Validates that the first HTTP line conforms strictly to the Method Path Protocol format.
-
-headersMap.put(...): Maps all headers into a dictionary, forcing keys to lowercase so future application lookups never fail due to capitalization errors.
-
-return new HttpRequest(...): Seals the extracted data into an immutable data transfer object to be safely read by the application layer.
- */
