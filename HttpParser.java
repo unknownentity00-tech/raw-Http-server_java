@@ -205,9 +205,12 @@ public class HttpParser {
                 throw new IllegalArgumentException("Malformed Header Line (Missing colon): " + line);
             }
 
-            String headerName = line.substring(0, colonIndex).trim();
+           String headerName = line.substring(0, colonIndex).trim();
             String headerValue = line.substring(colonIndex + 1).trim();
 
+            if (!isValidHeaderName(headerName)) {
+                throw new IllegalArgumentException("Invalid header name");
+            }
             // Header name must be non-empty
             if (headerName.isEmpty()) {
                 throw new IllegalArgumentException("Malformed Header Line: Header name cannot be empty.");
@@ -253,4 +256,22 @@ public class HttpParser {
         // 9. Construct and return your HttpRequest object
         return new HttpRequest(method, path, protocol, headersMap, bodyBytes, keepAlive);
     }
+    // Validates header names to reject empty strings, spaces, tabs, and control characters
+    private static boolean isValidHeaderName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            // Reject spaces, tabs, control characters, or invalid token symbols
+            if (c <= 32 || c >= 127 || c == '(' || c == ')' || c == '<' || c == '>' || 
+                c == '@' || c == ',' || c == ';' || c == ':' || c == '\\' || c == '"' || 
+                c == '/' || c == '[' || c == ']' || c == '?' || c == '=' || c == '{' || c == '}') {
+                return false;
+            }
+        }
+        return true;
+    }
+
 }
