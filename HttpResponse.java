@@ -31,6 +31,9 @@ public class HttpResponse {
         addHeader("Content-Type", "text/plain; charset=UTF-8");
     }
 
+    public byte[] getBodyBytes() {
+        return this.bodyBytes;
+    }
     // Overload 2: For binary/raw byte bodies (preserves exact payload)
     public void setBody(byte[] bodyBytes) {
         this.bodyBytes = bodyBytes;

@@ -21,8 +21,21 @@ public class Router {
             response.setBody("404: The endpoint " + path + " does not exist.");
             return response;
         }
+        // --- PHASE 5.3: HANDLE OPTIONS METHOD ---
+        if (method.equals("OPTIONS")) {
+            HttpResponse response = new HttpResponse(200, "OK");
+            String allowedMethods = String.join(", ", pathRoutes.keySet());
+            response.addHeader("Allow", allowedMethods);
+            response.setBody(""); // OPTIONS typically returns an empty body or description
+            return response;
+        }
 
         RouteHandler handler = pathRoutes.get(method);
+
+        // --- PHASE 5.3: HANDLE HEAD METHOD (Fallback to GET handler if HEAD isn't explicitly registered) ---
+        if (handler == null && method.equals("HEAD")) {
+            handler = pathRoutes.get("GET");
+        }
 
         // Scenario 2: Path exists, but HTTP Method is not registered -> 405
         if (handler == null) {
@@ -37,7 +50,16 @@ public class Router {
 
         // Scenario 3: Execution and 500 Catch
         try {
-            return handler.handle(request);
+            HttpResponse response = handler.handle(request);
+            // --- PHASE 5.3: STRIP BODY FOR HEAD REQUESTS (Keep Content-Length intact) ---
+            if (request.getMethod().equalsIgnoreCase("HEAD")) {
+                // Ensure Content-Length header is set based on the original body length before clearing it
+                if (response.getBodyBytes() != null) {
+                    response.addHeader("Content-Length", String.valueOf(response.getBodyBytes().length));
+                }
+                response.setBody(""); // Clear body bytes for HEAD response
+            }
+           return response;
         } catch (Exception e) {
             System.err.println("Handler crashed: " + e.getMessage());
             HttpResponse response = new HttpResponse(500, "Internal Server Error");
