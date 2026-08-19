@@ -9,20 +9,24 @@ import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 import java.util.Set;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.nio.channels.ServerSocketChannel;
-import java.nio.channels.SocketChannel;
-import java.util.Iterator;
-import java.util.Set;
 
 public class NioHttpServer {
     
+    // --- SECURITY & LIMIT CONSTANTS ---
     private static final int MAX_HEADER_SIZE = 16 * 1024;         // 16 KB limits memory exhaustion per request
     private static final int MAX_BODY_SIZE = 10 * 1024 * 1024;    // 10 MB limits payload bombs
+    
+    // --- TIMEOUT & LIFECYCLE CONSTANTS ---
     private static final long CONNECTION_TIMEOUT_MS = 15000;      // 15 seconds max idle time
+    private static final long GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5000; // 5 seconds max for shutdown
+    
+    private enum ServerState { RUNNING, SHUTTING_DOWN, TERMINATED }
+    private static final int MAX_ACTIVE_CONNECTIONS = 10000;      // 1. Max concurrent active sockets
+    private static final int MAX_REQUESTS_PER_CONNECTION = 100;   // 2. Max keep-alive loops per socket
+    public int requestsProcessed = 0;
+    // volatile ensures the shutdown hook thread and the reactor thread see the exact same value
+    private static volatile ServerState serverState = ServerState.RUNNING;
+    private static volatile long shutdownStartTime = 0;
     
     public static void main(String[] args) {
         int port = 8080;
@@ -69,87 +73,138 @@ public class NioHttpServer {
             serverChannel.configureBlocking(false);
 
             // 3. Registration
-            // Tell the Selector: "Wake me up ONLY when a new client attempts to connect."
             serverChannel.register(selector, SelectionKey.OP_ACCEPT);
 
             System.out.println("NIO Event Loop started on port " + port);
 
-            // 4. The Infinite Event Loop (The Reactor)
-            while (true) {
+            // --- PHASE 5.7: JVM SHUTDOWN HOOK ---
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                System.out.println("\n[Shutdown] Signal received. Initiating graceful shutdown...");
+                serverState = ServerState.SHUTTING_DOWN;
+                shutdownStartTime = System.currentTimeMillis();
+                
+                // Wake up the reactor loop immediately from its 1000ms sleep
+                selector.wakeup();
+                
+                // Block the JVM from exiting until the reactor loop finishes its cleanup
+                while (serverState != ServerState.TERMINATED) {
+                    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+                }
+                System.out.println("[Shutdown] Clean exit complete.");
+            }));
+
+            // 4. The State-Aware Event Loop (The Reactor)
+            while (serverState != ServerState.TERMINATED) {
                 // select(1000) guarantees the thread wakes up every 1 second minimum
-                // This is required so enforceTimeouts() runs even if no network traffic arrives.
                 selector.select(1000);
+                
+                // --- PHASE 5.7: STOP ACCEPTING NEW CONNECTIONS ---
+                if (serverState == ServerState.SHUTTING_DOWN && serverChannel.isOpen()) {
+                    System.out.println("[Shutdown] Closing server socket. Rejecting new TCP connections.");
+                    serverChannel.close(); 
+                }
 
                 Set<SelectionKey> selectedKeys = selector.selectedKeys();
                 Iterator<SelectionKey> keyIterator = selectedKeys.iterator();
 
                 while (keyIterator.hasNext()) {
                     SelectionKey key = keyIterator.next();
-                    
-                    // You MUST remove the key from the iterator, otherwise the loop
-                    // will infinitely process the same event and crash.
                     keyIterator.remove();
 
-                    if (!key.isValid()) {
-                        continue;
-                    }
+                    if (!key.isValid()) continue;
 
-                    // --- STEP 2: Handle New Connections ---
-                    if (key.isAcceptable()) {
+                    // Only accept connections if we are strictly RUNNING
+                    if (key.isAcceptable() && serverState == ServerState.RUNNING) {
                         acceptConnection(key, selector);
                     }
-
-                    // --- STEP 3: Handle Incoming Bytes ---
                     if (key.isReadable()) {
                         handleRead(key, router);
                     }
-
-                    // --- STEP 4: Handle Outgoing Bytes ---
                     if (key.isWritable()) {
                         handleWrite(key, router);
                     }
                 }
                 
-                // --- PHASE 5.6: DEADLINE ENFORCEMENT ---
-                // MUST BE OUTSIDE the key iterator loop. It runs exactly once per reactor cycle.
-                enforceTimeouts(selector);
+                // --- PHASE 5.6 & 5.7: LIFECYCLE SWEEP ---
+                // Runs exactly once per reactor cycle to enforce timeouts and graceful shutdowns
+                manageLifecycle(selector);
             }
+            
+            // Final cleanup when the reactor terminates
+            if (selector.isOpen()) {
+                selector.close();
+            }
+            
         } catch (IOException e) {
             System.err.println("Fatal NIO error: " + e.getMessage());
         }
     }
 
-    // --- PHASE 5.6: Sweeps for dead connections ---
-    private static void enforceTimeouts(Selector selector) {
+    // --- PHASE 5.7: LIFECYCLE MANAGEMENT ---
+    private static void manageLifecycle(Selector selector) {
         long now = System.currentTimeMillis();
-        
-        // selector.keys() returns ALL registered connections, active or idle
+        boolean isShuttingDown = (serverState == ServerState.SHUTTING_DOWN);
+        boolean forceClose = isShuttingDown && (now - shutdownStartTime > GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+        int activeClients = 0;
+
         for (SelectionKey key : selector.keys()) {
+            if (key.channel() instanceof ServerSocketChannel) continue;
+
             if (key.isValid() && key.attachment() instanceof ClientState) {
                 ClientState state = (ClientState) key.attachment();
-                
+                SocketChannel channel = (SocketChannel) key.channel();
+                    // 1. GRACEFUL SHUTDOWN HARD TIMEOUT: 5 seconds exceeded, kill everything instantly
+                 if (forceClose) {
+                    closeCleanly(key, channel);
+                    continue;
+                }
+
+                // 2. GRACEFUL SHUTDOWN: Let active writers finish, kill idle readers
+                if (isShuttingDown) {
+                    if ((key.interestOps() & SelectionKey.OP_WRITE) != 0) {
+                        activeClients++; // Client is actively writing a response, spare it
+                    } else {
+                        // Client is idle or just starting a read. Terminate it.
+                        closeCleanly(key, channel);
+                    }
+                    continue;
+                }
+
+                // 3. PHASE 5.6: Normal Idle Timeout logic
                 if (now - state.lastActivityTime > CONNECTION_TIMEOUT_MS) {
                     System.out.println("Connection timeout. Terminating idle socket.");
-                    try {
-                        key.channel().close();
-                    } catch (IOException ignored) {}
-                    key.cancel();
+                    closeCleanly(key, channel);
                 }
             }
         }
+
+        // If we are shutting down and 0 active clients remain, release the JVM lock
+        if (isShuttingDown && activeClients == 0) {
+            System.out.println("[Shutdown] All clients finished. Terminating reactor.");
+            serverState = ServerState.TERMINATED;
+        }
+    }
+
+    private static void closeCleanly(SelectionKey key, SocketChannel channel) {
+        try {
+            channel.close();
+        } catch (IOException ignored) {}
+        key.cancel();
     }
 
     private static void acceptConnection(SelectionKey key, Selector selector) throws IOException {
         ServerSocketChannel serverChannel = (ServerSocketChannel) key.channel();
-
-        // This accept() will NEVER block because the OS already told us a client is waiting
         SocketChannel clientChannel = serverChannel.accept();
 
-        // Configure the individual client stream to be non-blocking
-        clientChannel.configureBlocking(false);
+        // --- 1. ENFORCE GLOBAL MAX ACTIVE CONNECTIONS ---
+        // (Subtract 1 because the ServerSocketChannel itself occupies one key)
+        if (selector.keys().size() - 1 >= MAX_ACTIVE_CONNECTIONS) {
+            System.err.println("Security Alert: Max connections (" + MAX_ACTIVE_CONNECTIONS + ") reached. Dropping client.");
+            clientChannel.close();
+            return;
+        }
 
-        // Register the new client with the selector, attaching a dedicated ClientState object.
-        // This maintains isolated state (buffers, parse status) across multiple OP_READ events.
+        clientChannel.configureBlocking(false);
         clientChannel.register(selector, SelectionKey.OP_READ, new ClientState());
 
         System.out.println("Accepted non-blocking connection from " + clientChannel.getRemoteAddress());
@@ -163,8 +218,7 @@ public class NioHttpServer {
             int bytesRead = clientChannel.read(state.readBuffer);
             if (bytesRead == -1) {
                 System.out.println("Client disconnected cleanly.");
-                clientChannel.close();
-                key.cancel();
+                closeCleanly(key, clientChannel);
                 return;
             }
 
@@ -193,11 +247,7 @@ public class NioHttpServer {
 
         } catch (IOException e) {
             System.err.println("Connection reset by peer.");
-            try {
-                clientChannel.close();
-                key.cancel();
-            } catch (IOException ignore) {
-            }
+            closeCleanly(key, clientChannel);
         }
     }
 
@@ -234,7 +284,6 @@ public class NioHttpServer {
         ClientState state = (ClientState) key.attachment();
          
         try {
-            // 1. Actually transmit the bytes to the OS network buffer
             // --- PHASE 5.6: Capture bytes written to update activity ---
             int bytesWritten = clientChannel.write(state.writeBuffer);
             
@@ -242,17 +291,16 @@ public class NioHttpServer {
                 state.updateActivity();
             }
             
-            // 2. Check for partial writes. Yield thread if network buffer is full.
+            // Check for partial writes. Yield thread if network buffer is full.
             if (state.writeBuffer.hasRemaining()) {
                 return; 
             }
             
-            // --- PHASE 5.5: CONNECTION LIFECYCLE & KEEP-ALIVE ---
-            // The response headers (created during Phase 5.4) are the ultimate authority.
+            // --- PHASE 5.5 & 5.7: KEEP-ALIVE CHECK ---
             boolean keepAlive = state.request != null && state.request.isKeepAlive();
             
-            // Force close if request was malformed or tripped security limits
-            if (state.malformedRequest) {
+            // Force close if malformed OR if the server is shutting down
+            if (state.malformedRequest || serverState == ServerState.SHUTTING_DOWN) {
                 keepAlive = false;
             }
 
@@ -265,8 +313,7 @@ public class NioHttpServer {
                 // Check for pipelined requests already sitting in the accumulator
                 if (state.accumulator.size() > 0) {
                     processAccumulator(key, state, clientChannel, router);
-                    // If processing didn't immediately flip us back to OP_WRITE (incomplete pipeline data), 
-                    // we switch to OP_READ to wait for the rest.
+                    // Switch to OP_READ if we need more bytes for the pipelined request
                     if (!state.requestComplete) {
                         key.interestOps(SelectionKey.OP_READ);
                     }
@@ -276,16 +323,11 @@ public class NioHttpServer {
                 }
             } else {
                 System.out.println("Response sent. Connection: close.");
-                clientChannel.close();
-                key.cancel();
+                closeCleanly(key, clientChannel);
             }
         } catch (IOException e) {
             System.err.println("Write failed: " + e.getMessage());
-            try {
-                clientChannel.close();
-                key.cancel();
-            } catch (IOException ignore) {
-            }
+            closeCleanly(key, clientChannel);
         }
     }
 
@@ -363,6 +405,9 @@ public class NioHttpServer {
             if (currentBytes.length >= expectedTotalBytes) {
                 state.requestComplete = true;
                 
+                // --- PHASE 5.7: TRACK REQUESTS PER CONNECTION ---
+                state.requestsProcessed++;
+                
                 // Slice EXACTLY the bytes for this request
                 byte[] exactRequestBytes = java.util.Arrays.copyOfRange(currentBytes, 0, expectedTotalBytes);
                 // Preserve trailing bytes for TCP pipelining (the next request)
@@ -378,8 +423,11 @@ public class NioHttpServer {
                     state.request = parser.parseRequest(exactRequestBytes, state.boundaryIndex);
                     
                     HttpResponse response = router.route(state.request);
-                    // Server policy controls ultimate keep-alive behavior
-                    response.setKeepAlive(state.request.isKeepAlive());
+                    
+                    // --- PHASE 5.7: ENFORCE MAX REQUESTS PER CONNECTION ---
+                    // Override keep-alive to false if the socket has lived too long
+                    boolean allowKeepAlive = state.request.isKeepAlive() && (state.requestsProcessed < MAX_REQUESTS_PER_CONNECTION);
+                    response.setKeepAlive(allowKeepAlive);
                     
                     state.writeBuffer = response.toByteBuffer();
                     key.interestOps(SelectionKey.OP_WRITE);
@@ -394,8 +442,10 @@ public class NioHttpServer {
                 }
             }
         }
-    }    
-}/*
+    }
+}
+
+/*
  * If you allocate an 8192-byte buffer, and the OS delivers 100 bytes:
  * 
  * After channel.read(): position = 100, limit = 8192.
