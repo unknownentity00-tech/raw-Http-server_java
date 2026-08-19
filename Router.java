@@ -1,13 +1,24 @@
 import java.util.HashMap;
 import java.util.Map;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.LinkedHashSet;
+
+/**
+ * The Router maps incoming URLs to the specific logic (RouteHandler) that should execute.
+ * This class is inherently thread-safe during execution because the 'routes' map is 
+ * only read from, never written to, once the server starts.
+ */
 public class Router {
     // Nested Dictionary: Path -> (Method -> Handler)
+    // Example: "/users" -> {"GET" -> GetUsersHandler, "POST" -> CreateUserHandler}
     private final Map<String, Map<String, RouteHandler>> routes = new HashMap<>();
 
     public void addRoute(String method, String path, RouteHandler handler) {
       routes.computeIfAbsent(path, k -> new HashMap<>())
-              .put(method.toUpperCase(), handler);
+            .put(method.toUpperCase(), handler);
     }
 
     public HttpResponse route(HttpRequest request) {
@@ -15,16 +26,19 @@ public class Router {
         String method = request.getMethod().toUpperCase();
 
         Map<String, RouteHandler> pathRoutes = routes.get(path);
-       // Scenario 1: Path does not exist at all -> 404
+        
+        // SCENARIO 1: 404 Not Found
+        // The client requested a URL that doesn't exist anywhere in our application.
         if (pathRoutes == null) {
-            HttpResponse response = new HttpResponse(404, "Not Found");
-            response.setBody("404: The endpoint " + path + " does not exist.");
-            return response;
+            return HttpResponse.createErrorResponse(404, "Not Found: The endpoint " + path + " does not exist.");
         }
-        // --- PHASE 5.3: HANDLE OPTIONS METHOD ---
+        
+        // SCENARIO 2: OPTIONS Method (CORS and API Discovery)
+        // We intercept this before looking for a handler because the server can automatically
+        // figure out what methods are allowed without needing developer-written handlers.
         if (method.equals("OPTIONS")) {
             HttpResponse response = new HttpResponse(200, "OK");
-            String allowedMethods = getImplicitAllowedMethods(pathRoutes); // <-- UPDATED HERE
+            String allowedMethods = getImplicitAllowedMethods(pathRoutes); 
             response.addHeader("Allow", allowedMethods);
             response.setBody(""); 
             return response;
@@ -32,47 +46,49 @@ public class Router {
 
         RouteHandler handler = pathRoutes.get(method);
 
-        // --- PHASE 5.3: HANDLE HEAD METHOD (Fallback to GET handler if HEAD isn't explicitly registered) ---
+        // SCENARIO 3: HEAD Method Fallback
+        // A HEAD request is identical to a GET request, just without the body bytes.
+        // If the developer didn't explicitly write a HEAD handler, we borrow the GET handler.
         if (handler == null && method.equals("HEAD")) {
             handler = pathRoutes.get("GET");
         }
 
-        // Scenario 2: Path exists, but HTTP Method is not registered -> 405
+        // SCENARIO 4: 405 Method Not Allowed
+        // The path exists (e.g., "/users"), but the client used the wrong method (e.g., DELETE instead of POST).
+        // We must tell the client what methods they are actually allowed to use here via the 'Allow' header.
         if (handler == null) {
-            HttpResponse response = new HttpResponse(405, "Method Not Allowed");
-            //  Dynamically calculate and inject the Allow header ---
-            String allowedMethods = getImplicitAllowedMethods(pathRoutes);
-            response.addHeader("Allow", allowedMethods);
-            
-            response.setBody("405: Method " + method + " is not allowed for " + path + ".\nAllowed: " + allowedMethods);
+            HttpResponse response = HttpResponse.createErrorResponse(405, "Method " + method + " is not allowed for " + path + ".");
+            response.addHeader("Allow", getImplicitAllowedMethods(pathRoutes));
             return response;
         }
 
-        // Scenario 3: Execution and 500 Catch
+        // SCENARIO 5: Execution and Crash Safety (500 Internal Server Error)
         try {
+            // Execute the actual endpoint logic
             HttpResponse response = handler.handle(request);
-            // --- PHASE 5.3: STRIP BODY FOR HEAD REQUESTS (Keep Content-Length intact) ---
-            if (request.getMethod().equalsIgnoreCase("HEAD")) {
-                // Ensure Content-Length header is set based on the original body length before clearing it
-               
-                 if (response.getBodyBytes() != null) {
-                    // Content-Length was already calculated by setBody(), just clear the payload bytes
-                    response.clearBodyForHead();
-                }
-                
-               // Clear body bytes for HEAD response
+            
+            // POST-PROCESSING for HEAD: 
+            // The GET handler we borrowed executed fully and generated a payload.
+            // We must keep the Content-Length calculation intact, but delete the actual bytes before transmission.
+            if (request.getMethod().equalsIgnoreCase("HEAD") && response.getBodyBytes() != null) {
+                response.clearBodyForHead();
             }
-           return response;
-        } catch (Exception e) {
-            System.err.println("Handler crashed: " + e.getMessage());
-            HttpResponse response = new HttpResponse(500, "Internal Server Error");
-            response.setBody("500: Internal Server Error");
             return response;
+        } catch (Exception e) {
+            // If the developer's route logic throws an exception (e.g., database crash, null pointer),
+            // we catch it here. This prevents the Worker Thread from dying and returns a 500 to the client.
+            System.err.println("Handler crashed: " + e.getMessage());
+            return HttpResponse.createErrorResponse(500, "Internal Server Error");
         }
-}
-private String getImplicitAllowedMethods(Map<String, RouteHandler> pathRoutes) {
-        java.util.Set<String> methods = new java.util.LinkedHashSet<>(pathRoutes.keySet());
-        // If GET is supported, implicitly support HEAD and OPTIONS
+    }
+
+    /**
+     * Calculates the contents of the HTTP 'Allow' header.
+     * Uses LinkedHashSet to maintain insertion order, ensuring deterministic outputs for testing.
+     */
+    private String getImplicitAllowedMethods(Map<String, RouteHandler> pathRoutes) {
+        Set<String> methods = new LinkedHashSet<>(pathRoutes.keySet());
+        // If GET is supported, the RFC dictates that HEAD and OPTIONS must also be implicitly supported.
         if (methods.contains("GET")) {
             methods.add("HEAD");
         }

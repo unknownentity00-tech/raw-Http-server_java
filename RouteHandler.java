@@ -1,4 +1,4 @@
-public interface RouteHandler {
-    HttpResponse handle(HttpRequest request);
+interface RouteHandler {
+    HttpResponse handle(HttpRequest request) throws Exception;
 }
 

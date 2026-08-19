@@ -2,90 +2,311 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public class HttpResponse {
+
     private final int statusCode;
     private final String statusMessage;
-    private final Map<String, String> headers = new HashMap<>();
+
+    /*
+     * LinkedHashMap makes response headers deterministic.
+     *
+     * HashMap does not guarantee iteration order.
+     *
+     * This is not required by HTTP, but makes debugging and
+     * testing much easier.
+     */
+    private final Map<String, String> headers =
+            new LinkedHashMap<>();
+
     private byte[] bodyBytes;
+
+    /*
+     * IMPORTANT:
+     *
+     * This value represents the actual HTTP entity length.
+     *
+     * For HEAD requests:
+     *
+     *      bodyBytes = null
+     *      contentLength = original GET body length
+     *
+     * Therefore Content-Length remains correct even though
+     * no body bytes are transmitted.
+     */
     private int contentLength = 0;
-    
+
+
     public HttpResponse(int statusCode, String statusMessage) {
+
         this.statusCode = statusCode;
         this.statusMessage = statusMessage;
-        
-        // Add default headers
-       this.headers.put("Connection", "keep-alive");
-        this.headers.put("Content-Length", "0"); // Default until a body is set
+
+        // The reactor makes the final keep-alive decision after it has parsed the request.
+        // Closing by default is the safe behavior if a response is serialized elsewhere.
+        headers.put("Connection", "close");
+        headers.put("Content-Length", "0");
     }
-// --- PHASE 5.4: CENTRALIZED ERROR RESPONSE FACTORIES ---
-    public static HttpResponse createErrorResponse(int statusCode, String statusMessage) {
-        HttpResponse response = new HttpResponse(statusCode, statusMessage);
-        response.setKeepAlive(false); // Errors default to closing connection unless specified otherwise
-        response.setBody(statusCode + ": " + statusMessage);
+
+
+    /*
+     * ============================================================
+     * CENTRALIZED ERROR RESPONSE
+     * ============================================================
+     */
+    public static HttpResponse createErrorResponse(
+            int statusCode,
+            String statusMessage) {
+
+        HttpResponse response =
+                new HttpResponse(statusCode, statusMessage);
+
+        /*
+         * Error responses close the connection by default.
+         *
+         * The server should not continue using a connection after
+         * serious malformed-request errors.
+         */
+        response.setKeepAlive(false);
+
+        response.setBody(
+                statusCode + ": " + statusMessage
+        );
+
         return response;
     }
+
+
+    /*
+     * ============================================================
+     * HEADER
+     * ============================================================
+     */
     public void addHeader(String key, String value) {
-        this.headers.put(key, value);
-    }
-      public void setKeepAlive(boolean keepAlive) {
-        this.headers.put("Connection", keepAlive ? "keep-alive" : "close");
-    }
-    // Overload 1: For text/html bodies
-    public void setBody(String bodyText) {
-        byte[] bytes = bodyText.getBytes(StandardCharsets.UTF_8);
-        setBody(bytes);
-        addHeader("Content-Type", "text/plain; charset=UTF-8");
-    }
-    // Clears the body bytes for HEAD requests without resetting the Content-Length header
-    public void clearBodyForHead() {
-        this.bodyBytes = null; // Do not transmit body bytes
-        // contentLength remains whatever setBody() originally calculated
-    }
-    // Overload 2: For binary/raw byte bodies (preserves exact payload)
 
-    public void setBody(byte[] bodyBytes) {
-        this.bodyBytes = bodyBytes;
-        this.contentLength = (bodyBytes != null) ? bodyBytes.length : 0;
-        addHeader("Content-Length", String.valueOf(this.contentLength));
-    }
-    public byte[] getBodyBytes() {
-        return this.bodyBytes;
-    }
-    // Overload 2: For binary/raw byte bodies (preserves exact payload)
-    
+        /*
+         * Remove accidental duplicate case variants.
+         *
+         * HTTP header names are case-insensitive.
+         */
+        String existingKey = null;
 
-    // The NIO Integration Method
-    public ByteBuffer toByteBuffer() {
-        StringBuilder headerBuilder = new StringBuilder();
-        
-        // 1. Status Line
-        headerBuilder.append("HTTP/1.1 ").append(statusCode).append(" ").append(statusMessage).append("\r\n");
-   
-        // Use the preserved contentLength field instead of recalculating from bodyBytes
-        headers.put("Content-Length", String.valueOf(this.contentLength));
-
-        // 2. Headers
-        for (Map.Entry<String, String> entry : headers.entrySet()) {
-            headerBuilder.append(entry.getKey()).append(": ").append(entry.getValue()).append("\r\n");
+        for (String existing : headers.keySet()) {
+            if (existing.equalsIgnoreCase(key)) {
+                existingKey = existing;
+                break;
+            }
         }
-        
-        // 3. Blank line separating headers from body
+
+        if (existingKey != null) {
+            headers.put(existingKey, value);
+        } else {
+            headers.put(key, value);
+        }
+    }
+
+
+    /*
+     * ============================================================
+     * CONNECTION
+     * ============================================================
+     */
+    public void setKeepAlive(boolean keepAlive) {
+
+        addHeader(
+                "Connection",
+                keepAlive ? "keep-alive" : "close"
+        );
+    }
+
+    /** Whether this response may safely keep the underlying connection open. */
+    public boolean isKeepAlive() {
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase("Connection")) {
+                return "keep-alive".equalsIgnoreCase(entry.getValue());
+            }
+        }
+        return false;
+    }
+
+
+    /*
+     * ============================================================
+     * TEXT BODY
+     * ============================================================
+     */
+    public void setBody(String bodyText) {
+
+        byte[] bytes =
+                bodyText.getBytes(StandardCharsets.UTF_8);
+
+        setBody(bytes);
+
+        addHeader(
+                "Content-Type",
+                "text/plain; charset=UTF-8"
+        );
+    }
+
+
+    /*
+     * ============================================================
+     * BINARY BODY
+     * ============================================================
+     */
+    public void setBody(byte[] bodyBytes) {
+
+        this.bodyBytes = bodyBytes;
+
+        this.contentLength =
+                bodyBytes == null
+                        ? 0
+                        : bodyBytes.length;
+
+        addHeader(
+                "Content-Length",
+                String.valueOf(contentLength)
+        );
+    }
+
+
+    /*
+     * ============================================================
+     * HEAD SUPPORT
+     * ============================================================
+     *
+     * We remove the actual body bytes.
+     *
+     * BUT:
+     *
+     * contentLength is NOT changed.
+     *
+     * Example:
+     *
+     * GET /hello
+     *
+     * Content-Length: 12
+     *
+     * HEAD /hello
+     *
+     * Content-Length: 12
+     * [NO BODY]
+     */
+    public void clearBodyForHead() {
+
+        bodyBytes = null;
+
+        /*
+         * DO NOT change contentLength.
+         */
+    }
+
+
+    public byte[] getBodyBytes() {
+        return bodyBytes;
+    }
+
+
+    /*
+     * ============================================================
+     * SERIALIZATION
+     * ============================================================
+     */
+    public ByteBuffer toByteBuffer() {
+
+        StringBuilder headerBuilder =
+                new StringBuilder();
+
+        /*
+         * Status line
+         */
+        headerBuilder
+                .append("HTTP/1.1 ")
+                .append(statusCode)
+                .append(" ")
+                .append(statusMessage)
+                .append("\r\n");
+
+
+        /*
+         * Always use the preserved HTTP entity length.
+         *
+         * This is critical for HEAD.
+         */
+        addHeader(
+                "Content-Length",
+                String.valueOf(contentLength)
+        );
+
+
+        /*
+         * Headers
+         */
+        for (Map.Entry<String, String> entry :
+                headers.entrySet()) {
+
+            headerBuilder
+                    .append(entry.getKey())
+                    .append(": ")
+                    .append(entry.getValue())
+                    .append("\r\n");
+        }
+
+
+        /*
+         * End of headers
+         */
         headerBuilder.append("\r\n");
 
-        byte[] headerBytes = headerBuilder.toString().getBytes(StandardCharsets.UTF_8);
 
-        // 4. Allocate exact capacity (bodyBytes is null/empty for HEAD, so 0 body bytes are written)
-        int bodyLengthToWrite = (bodyBytes != null) ? bodyBytes.length : 0;
-        ByteBuffer buffer = ByteBuffer.allocate(headerBytes.length + bodyLengthToWrite);
+        byte[] headerBytes =
+                headerBuilder
+                        .toString()
+                        .getBytes(StandardCharsets.UTF_8);
+
+
+        /*
+         * If this is HEAD:
+         *
+         * bodyBytes == null
+         *
+         * Therefore zero body bytes are transmitted.
+         */
+        int bodyLengthToWrite =
+                bodyBytes == null
+                        ? 0
+                        : bodyBytes.length;
+
+
+        ByteBuffer buffer =
+                ByteBuffer.allocate(
+                        headerBytes.length +
+                        bodyLengthToWrite
+                );
+
+
         buffer.put(headerBytes);
-        
-        if (bodyBytes != null && bodyLengthToWrite > 0) {
+
+        if (bodyBytes != null &&
+                bodyLengthToWrite > 0) {
+
             buffer.put(bodyBytes);
         }
-        
-        // 5. Flip buffer for channel reading
+
+
+        /*
+         * Switch from write mode → read mode.
+         */
         buffer.flip();
+
         return buffer;
     }
 }
