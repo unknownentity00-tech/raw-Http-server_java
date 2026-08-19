@@ -9,6 +9,7 @@ public class HttpResponse {
     private final Map<String, String> headers = new HashMap<>();
     private byte[] bodyBytes;
     private int contentLength = 0;
+    
     public HttpResponse(int statusCode, String statusMessage) {
         this.statusCode = statusCode;
         this.statusMessage = statusMessage;

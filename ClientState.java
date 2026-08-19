@@ -41,6 +41,16 @@ public class ClientState {
         // If a client sent Request 1 and Request 2 back-to-back in the same TCP packet,
         // the accumulator already contains the bytes for Request 2! 
         // We will need to slice the accumulator safely in the Reactor loop.
+        
+if (readBuffer != null) {
+            readBuffer.clear(); 
+        }
+        
+    }
+    public long lastActivityTime = System.currentTimeMillis();
+
+    public void updateActivity() {
+        this.lastActivityTime = System.currentTimeMillis();
     }
 }
 /*

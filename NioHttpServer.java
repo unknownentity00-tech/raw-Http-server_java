@@ -9,13 +9,26 @@ import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 import java.util.Set;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.util.Iterator;
+import java.util.Set;
+
 public class NioHttpServer {
-    private static final int MAX_HEADER_SIZE = 16 * 1024;         // 16 KB
-    private static final int MAX_BODY_SIZE = 10 * 1024 * 1024;    // 10 MB
+    
+    private static final int MAX_HEADER_SIZE = 16 * 1024;         // 16 KB limits memory exhaustion per request
+    private static final int MAX_BODY_SIZE = 10 * 1024 * 1024;    // 10 MB limits payload bombs
+    private static final long CONNECTION_TIMEOUT_MS = 15000;      // 15 seconds max idle time
+    
     public static void main(String[] args) {
         int port = 8080;
         Router router = new Router();
 
+        // --- Application Routes ---
         router.addRoute("GET", "/", (HttpRequest request) -> {
             HttpResponse res = new HttpResponse(200, "OK");
             res.setBody("Home Page");
@@ -43,17 +56,16 @@ public class NioHttpServer {
         router.addRoute("GET", "/crash", (HttpRequest request) -> {
             throw new RuntimeException("Deliberate crash for testing 500 Internal Server Error");
         });
+
         try {
             // 1. The Selector (The Traffic Cop)
-            // This replaces your ExecutorService. It monitors multiple channels
-            // simultaneously.
             Selector selector = Selector.open();
 
             // 2. The Non-Blocking Server Socket
             ServerSocketChannel serverChannel = ServerSocketChannel.open();
             serverChannel.bind(new InetSocketAddress(port));
 
-            // CRITICAL: This mathematically prevents the thread from freezing during I/O
+            // CRITICAL: Mathematically prevents the thread from freezing during OS I/O
             serverChannel.configureBlocking(false);
 
             // 3. Registration
@@ -64,15 +76,16 @@ public class NioHttpServer {
 
             // 4. The Infinite Event Loop (The Reactor)
             while (true) {
-                // select() blocks the thread until at least one OS-level event occurs
-                selector.select();
+                // select(1000) guarantees the thread wakes up every 1 second minimum
+                // This is required so enforceTimeouts() runs even if no network traffic arrives.
+                selector.select(1000);
 
                 Set<SelectionKey> selectedKeys = selector.selectedKeys();
                 Iterator<SelectionKey> keyIterator = selectedKeys.iterator();
 
                 while (keyIterator.hasNext()) {
                     SelectionKey key = keyIterator.next();
-
+                    
                     // You MUST remove the key from the iterator, otherwise the loop
                     // will infinitely process the same event and crash.
                     keyIterator.remove();
@@ -82,50 +95,66 @@ public class NioHttpServer {
                     }
 
                     // --- STEP 2: Handle New Connections ---
-                    if (key.isValid() && key.isAcceptable()) {
+                    if (key.isAcceptable()) {
                         acceptConnection(key, selector);
                     }
 
                     // --- STEP 3: Handle Incoming Bytes ---
-                    if (key.isValid() && key.isReadable()) {
+                    if (key.isReadable()) {
                         handleRead(key, router);
                     }
 
                     // --- STEP 4: Handle Outgoing Bytes ---
-                    if (key.isValid() && key.isWritable()) {
+                    if (key.isWritable()) {
                         handleWrite(key, router);
                     }
                 }
+                
+                // --- PHASE 5.6: DEADLINE ENFORCEMENT ---
+                // MUST BE OUTSIDE the key iterator loop. It runs exactly once per reactor cycle.
+                enforceTimeouts(selector);
             }
         } catch (IOException e) {
             System.err.println("Fatal NIO error: " + e.getMessage());
         }
     }
 
+    // --- PHASE 5.6: Sweeps for dead connections ---
+    private static void enforceTimeouts(Selector selector) {
+        long now = System.currentTimeMillis();
+        
+        // selector.keys() returns ALL registered connections, active or idle
+        for (SelectionKey key : selector.keys()) {
+            if (key.isValid() && key.attachment() instanceof ClientState) {
+                ClientState state = (ClientState) key.attachment();
+                
+                if (now - state.lastActivityTime > CONNECTION_TIMEOUT_MS) {
+                    System.out.println("Connection timeout. Terminating idle socket.");
+                    try {
+                        key.channel().close();
+                    } catch (IOException ignored) {}
+                    key.cancel();
+                }
+            }
+        }
+    }
+
     private static void acceptConnection(SelectionKey key, Selector selector) throws IOException {
-        // We know the channel is a ServerSocketChannel because only the server
-        // was registered with OP_ACCEPT
         ServerSocketChannel serverChannel = (ServerSocketChannel) key.channel();
 
-        // This accept() will NEVER block because the OS already told us a client is
-        // waiting
+        // This accept() will NEVER block because the OS already told us a client is waiting
         SocketChannel clientChannel = serverChannel.accept();
 
-        // You must also configure the individual client stream to be non-blocking
+        // Configure the individual client stream to be non-blocking
         clientChannel.configureBlocking(false);
 
-        // Register the new client with the selector, but this time listen for bytes to
-        // READ
-        // CRITICAL: We attach a dedicated ClientState object to this specific client's
-        // key.
-        // This is how the single thread remembers who is who when OP_READ fires.
+        // Register the new client with the selector, attaching a dedicated ClientState object.
+        // This maintains isolated state (buffers, parse status) across multiple OP_READ events.
         clientChannel.register(selector, SelectionKey.OP_READ, new ClientState());
 
         System.out.println("Accepted non-blocking connection from " + clientChannel.getRemoteAddress());
     }
 
-    // 3. Read and Accumulate
-    // EDIT 1: Added Router to method signature
     private static void handleRead(SelectionKey key, Router router) {
         SocketChannel clientChannel = (SocketChannel) key.channel();
         ClientState state = (ClientState) key.attachment();
@@ -142,22 +171,24 @@ public class NioHttpServer {
             if (bytesRead == 0) {
                 return;
             }
-
-            // 2. THE FLIP
+            
+            // --- PHASE 5.6: REFRESH TIMEOUT ON READ ---
+            state.updateActivity();
+            
+            // THE FLIP: Prepare buffer for reading data out of it
             state.readBuffer.flip();
 
-            // 3. Extract bytes
+            // Extract bytes
             byte[] chunk = new byte[state.readBuffer.remaining()];
             state.readBuffer.get(chunk);
 
-            // 4. Accumulate
+            // Accumulate safely without complex ByteBuffer resizing math
             state.accumulator.write(chunk);
 
-            // 5. THE CLEAR
+            // THE CLEAR: Reset buffer for the next OS read event
             state.readBuffer.clear();
 
-            // --- HTTP COMPLETENESS CHECK ---
-            // EDIT 2: Pass Router to processAccumulator
+            // Evaluate if we have a complete HTTP request ready to parse
             processAccumulator(key, state, clientChannel, router);
 
         } catch (IOException e) {
@@ -170,7 +201,7 @@ public class NioHttpServer {
         }
     }
 
-    // Mathematically scans for the 4-byte HTTP header boundary sequence
+    // Mathematically scans for the 4-byte HTTP header boundary sequence (\r\n\r\n)
     private static int findHeaderBoundary(byte[] data) {
         for (int i = 0; i < data.length - 3; i++) {
             if (data[i] == '\r' && data[i + 1] == '\n' && data[i + 2] == '\r' && data[i + 3] == '\n') {
@@ -198,31 +229,49 @@ public class NioHttpServer {
         return 0;
     }
 
-    // EDIT 3: Added Router to method signature
     private static void handleWrite(SelectionKey key, Router router) {
         SocketChannel clientChannel = (SocketChannel) key.channel();
         ClientState state = (ClientState) key.attachment();
-
+         
         try {
             // 1. Actually transmit the bytes to the OS network buffer
-            clientChannel.write(state.writeBuffer);
-            // 2. Check for partial writes
-            if (state.writeBuffer.hasRemaining()) {
-                return; // Yield thread
+            // --- PHASE 5.6: Capture bytes written to update activity ---
+            int bytesWritten = clientChannel.write(state.writeBuffer);
+            
+            if (bytesWritten > 0) {
+                state.updateActivity();
             }
-            if (state.request != null && state.request.isKeepAlive()) {
-                System.out.println("Response sent. Keeping connection alive.");
-                state.reset(); // Wipes HTTP state
+            
+            // 2. Check for partial writes. Yield thread if network buffer is full.
+            if (state.writeBuffer.hasRemaining()) {
+                return; 
+            }
+            
+            // --- PHASE 5.5: CONNECTION LIFECYCLE & KEEP-ALIVE ---
+            // The response headers (created during Phase 5.4) are the ultimate authority.
+            boolean keepAlive = state.request != null && state.request.isKeepAlive();
+            
+            // Force close if request was malformed or tripped security limits
+            if (state.malformedRequest) {
+                keepAlive = false;
+            }
 
-                // --- PIPELINING TRAP FIX ---
-                // If bytes are left over, process them instantly. Do not wait for OP_READ.
+            if (keepAlive) {
+                System.out.println("Response sent. Keeping connection alive for pipelined/future requests.");
+                
+                // Reset state parameters but leave leftover accumulator bytes intact.
+                state.reset(); 
+
+                // Check for pipelined requests already sitting in the accumulator
                 if (state.accumulator.size() > 0) {
-                    // EDIT 4: Pass Router to processAccumulator
                     processAccumulator(key, state, clientChannel, router);
+                    // If processing didn't immediately flip us back to OP_WRITE (incomplete pipeline data), 
+                    // we switch to OP_READ to wait for the rest.
                     if (!state.requestComplete) {
                         key.interestOps(SelectionKey.OP_READ);
                     }
                 } else {
+                    // No leftover bytes, wait for the next request cycle
                     key.interestOps(SelectionKey.OP_READ);
                 }
             } else {
@@ -240,13 +289,10 @@ public class NioHttpServer {
         }
     }
 
-    // EDIT 5: Added Router to method signature
-    private static void processAccumulator(SelectionKey key, ClientState state, SocketChannel clientChannel,
-            Router router) throws IOException {
+    private static void processAccumulator(SelectionKey key, ClientState state, SocketChannel clientChannel, Router router) throws IOException {
         byte[] currentBytes = state.accumulator.toByteArray();
 
-     
-       // Step A: Hunt for the \r\n\r\n boundary and enforce MAX_HEADER_SIZE
+        // Step A: Hunt for the \r\n\r\n boundary and enforce MAX_HEADER_SIZE
         if (!state.headersParsed) {
             if (currentBytes.length > MAX_HEADER_SIZE) {
                 System.err.println("Security Alert: Header size exceeded 16 KB limit.");
@@ -261,17 +307,18 @@ public class NioHttpServer {
                 key.interestOps(SelectionKey.OP_WRITE);
                 return;
             }
+            
             state.boundaryIndex = findHeaderBoundary(currentBytes);
             if (state.boundaryIndex != -1) {
                 state.headersParsed = true;
-                String headers = new String(currentBytes, 0, state.boundaryIndex,
-                        java.nio.charset.StandardCharsets.UTF_8);
+                String headers = new String(currentBytes, 0, state.boundaryIndex, java.nio.charset.StandardCharsets.UTF_8);
                 state.contentLength = extractContentLength(headers);
 
                 if (state.contentLength == -1) {
                     state.malformedRequest = true;
                     state.requestComplete = true;
                     HttpResponse response = new HttpResponse(400, "Bad Request");
+                    response.setKeepAlive(false);
                     state.writeBuffer = response.toByteBuffer();
                     key.interestOps(SelectionKey.OP_WRITE);
                     return;
@@ -279,7 +326,8 @@ public class NioHttpServer {
             }
         }
 
-       if (state.headersParsed && !state.requestComplete && !state.malformedRequest) {
+        // Step B: Wait for the full body payload (if any) based on Content-Length
+        if (state.headersParsed && !state.requestComplete && !state.malformedRequest) {
             
             if (state.contentLength > MAX_BODY_SIZE) {
                 System.err.println("Security Alert: Declared body size exceeds 10 MB limit.");
@@ -311,10 +359,13 @@ public class NioHttpServer {
                 return;
             }
 
+            // Execute logic only when the entire request (headers + body) is present
             if (currentBytes.length >= expectedTotalBytes) {
                 state.requestComplete = true;
                 
+                // Slice EXACTLY the bytes for this request
                 byte[] exactRequestBytes = java.util.Arrays.copyOfRange(currentBytes, 0, expectedTotalBytes);
+                // Preserve trailing bytes for TCP pipelining (the next request)
                 byte[] leftoverBytes = java.util.Arrays.copyOfRange(currentBytes, expectedTotalBytes, currentBytes.length);
                 
                 state.accumulator.reset(); 
@@ -327,6 +378,7 @@ public class NioHttpServer {
                     state.request = parser.parseRequest(exactRequestBytes, state.boundaryIndex);
                     
                     HttpResponse response = router.route(state.request);
+                    // Server policy controls ultimate keep-alive behavior
                     response.setKeepAlive(state.request.isKeepAlive());
                     
                     state.writeBuffer = response.toByteBuffer();
@@ -343,9 +395,7 @@ public class NioHttpServer {
             }
         }
     }    
-}
-
-/*
+}/*
  * If you allocate an 8192-byte buffer, and the OS delivers 100 bytes:
  * 
  * After channel.read(): position = 100, limit = 8192.
