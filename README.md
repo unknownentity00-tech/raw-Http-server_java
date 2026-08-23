@@ -13,9 +13,10 @@ Phase 6 — Production Hardening: Added strict HTTP validation, request/header/b
 
 PHASE 1-
 
-<img width="700" height="408" alt="Screenshot 2026-08-23 at 17 00 22" src="https://github.com/user-attachments/assets/4e3b21be-4525-45b8-b211-24b4ba90c4e4" />
+<img width="971" height="536" alt="Screenshot 2026-08-23 at 17 01 55" src="https://github.com/user-attachments/assets/a330a86c-956f-4871-94b1-18d817f99308" />
 
 Built the foundational HTTP server using Java ServerSocket and InputStream. Implemented TCP connection handling, byte buffering, request accumulation, detection of the \r\n\r\n HTTP header boundary, basic HTTP request parsing, and generation of HTTP responses.
+
 
 
   
