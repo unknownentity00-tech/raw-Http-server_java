@@ -1,17 +1,21 @@
 package In_MemoryTask_Queue_with_Workers;
 
-import java.util.LinkedList;
-import java.util.Queue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+
+
+
+
 
 public class TaskQueue {
-    private final Queue<Task> queue = new LinkedList<>();
+    private final BlockingQueue<Task> queue = new LinkedBlockingQueue<>();
 
-    public void submit(Task task) {
-        queue.offer(task);
+    public void submit(Task task) throws InterruptedException {
+        queue.put(task);
     }
 
-    public Task take() {
-        return queue.poll();
+    public Task take() throws InterruptedException {
+        return queue.take();
     }
 
     public int size() {
@@ -22,3 +26,4 @@ public class TaskQueue {
         return queue.isEmpty();
     }
 }
+
