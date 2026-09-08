@@ -14,36 +14,44 @@ Submit all 10
 Wait for all tasks to complete
 
 Shutdown pool */
+   
     public static void main(String[] args) throws InterruptedException {
-        int workerCount = 3;
-        int totalTasks = 10;
+        int workerCount = 1; // Single worker to strictly prove priority order
         WorkerPool pool = new WorkerPool(workerCount);
 
-        AtomicInteger activeCount  = new AtomicInteger(0);
-        AtomicInteger maxConcurrent  = new AtomicInteger(0);
-       
-        for (int i = 1; i <= totalTasks; i++) {
-            final int taskId = i;
-            pool.submit(() -> {
-                int currentActive = activeCount.incrementAndGet();
-                maxConcurrent.updateAndGet(max -> Math.max(max, currentActive));
+        AtomicInteger activeCount = new AtomicInteger(0);
+        AtomicInteger maxConcurrent = new AtomicInteger(0);
 
-                System.out.println(Thread.currentThread().getName() + " → Executing Task-" + taskId + " (Active: " + currentActive + ")");
-                try {
-                    Thread.sleep(400); // Simulate workload duration
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    activeCount.decrementAndGet();
-                }
-            });
-        }
+        System.out.println("=== Phase 4 Concurrency & Priority Test ===");
 
-        Thread.sleep(4000);
+        // Submit tasks out of order with explicit priorities
+        pool.submit("Task-1", 1, createWrappedTask(1, activeCount, maxConcurrent));
+        pool.submit("Task-2", 10, createWrappedTask(2, activeCount, maxConcurrent));
+        pool.submit("Task-3", 5, createWrappedTask(3, activeCount, maxConcurrent));
+        pool.submit("Task-4", 8, createWrappedTask(4, activeCount, maxConcurrent));
+        pool.submit("Task-5", 3, createWrappedTask(5, activeCount, maxConcurrent));
+
+        Thread.sleep(3000);
         pool.shutdown();
 
         System.out.println("\n--- Test Results ---");
         System.out.println("Max concurrent executions observed: " + maxConcurrent.get() + " (Must be <= " + workerCount + ")");
-
     }
-}
+
+    // Helper method to wrap task execution logic with concurrency counters
+    private static Runnable createWrappedTask(int taskId, AtomicInteger activeCount, AtomicInteger maxConcurrent) {
+        return () -> {
+            int currentActive = activeCount.incrementAndGet();
+            maxConcurrent.updateAndGet(max -> Math.max(max, currentActive));
+
+            System.out.println(Thread.currentThread().getName() + " → Executing Task-" + taskId + " (Active: " + currentActive + ")");
+            try {
+                Thread.sleep(300); // Simulate workload duration
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                activeCount.decrementAndGet();
+            }
+        };
+    }
+    }

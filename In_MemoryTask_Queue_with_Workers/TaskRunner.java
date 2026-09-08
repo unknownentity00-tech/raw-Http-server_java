@@ -1,6 +1,8 @@
 package In_MemoryTask_Queue_with_Workers;
 
-public class TaskRunner {
+
+
+public class TaskRunner implements Runnable {
     private final int taskCount;
     private final WorkerPool workerPool;
     private final String name;
@@ -10,26 +12,29 @@ public class TaskRunner {
         this.taskCount = taskCount;
         this.name = name;
     }
-     public void run(){
-       try{
-        for( int i = 1; i <= taskCount; i++) {
-            final String taskId = name + "-Task-" + i;
-               // Submit a Runnable task directly to the WorkerPool
-                workerPool.submit(() -> {
-                    System.out.println(Thread.currentThread().getName() + " executing " + taskId);
+
+    @Override
+    public void run() {
+        try {
+            for (int i = 1; i <= taskCount; i++) {
+                String taskId = name + "-Task-" + i;
+                // Assign a dummy priority or randomize it for testing
+                int priority = (int) (Math.random() * 10) + 1; 
+
+                workerPool.submit(taskId, priority, () -> {
+                    System.out.println(Thread.currentThread().getName() + " executing " + taskId + " (Priority: " + priority + ")");
                     try {
-                        Thread.sleep(200); // Simulate work
+                        Thread.sleep(200);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
                 });
-                System.out.println("Producer " + name + ": submitted " + taskId);
-                
-                Thread.sleep(100);
+
+                System.out.println("Producer " + name + ": submitted " + taskId + " with priority " + priority);
+                Thread.sleep(50);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-
     }
 }
