@@ -15,12 +15,12 @@ WorkerPool
     ├── Worker-2
     └── Worker-3
     */
-     private final BlockingQueue<Runnable> taskQueue;
+     private final TaskQueue taskQueue;
      private final List<Worker> workers;
      private final List<Thread> workerThreads;
 
    public WorkerPool(int workerCount){
-         this.taskQueue = new LinkedBlockingQueue<>();
+         this.taskQueue =  new TaskQueue();
         this.workers = new ArrayList<>();
         this.workerThreads = new ArrayList<>();
 
@@ -34,24 +34,20 @@ WorkerPool
 
    }
 
-    public void submit(Runnable task) throws InterruptedException {
-       try{ taskQueue.put(task);
-    }catch (InterruptedException e)
-{
-    throw new RuntimeException("Task submission interrupted", e);
-
-}
+    public void submit(String id, int priority, Runnable task) {
+        taskQueue.submit(id, priority, task);
     }
 
-public void shutdown(){
+    
+
+public void shutdown() {
         for (Worker worker : workers) {
             worker.stopWorker();
         }
         for (Thread thread : workerThreads) {
             thread.interrupt();
         }
-    
- }
+    }
     }
 
 
