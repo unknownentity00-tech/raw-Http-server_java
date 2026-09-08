@@ -17,7 +17,6 @@ Shutdown pool */
    
     public static void main(String[] args) throws InterruptedException {
         int workerCount = 1; // Single worker to strictly prove priority order
-        int totalTasks = 5;
         WorkerPool pool = new WorkerPool(workerCount);
 
         AtomicInteger activeCount = new AtomicInteger(0);
