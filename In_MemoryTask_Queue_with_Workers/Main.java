@@ -22,19 +22,21 @@ Shutdown pool */
         AtomicInteger activeCount = new AtomicInteger(0);
         AtomicInteger maxConcurrent = new AtomicInteger(0);
 
-        System.out.println("=== Phase 4 Concurrency & Priority Test ===");
+        System.out.println("=== Phase 5 Concurrency, Priority & Cancellation Test ===");
 
-        // Submit tasks out of order with explicit priorities
+       // Submit tasks out of order with explicit priorities
         pool.submit("Task-1", 1, createWrappedTask(1, activeCount, maxConcurrent));
         pool.submit("Task-2", 10, createWrappedTask(2, activeCount, maxConcurrent));
         pool.submit("Task-3", 5, createWrappedTask(3, activeCount, maxConcurrent));
         pool.submit("Task-4", 8, createWrappedTask(4, activeCount, maxConcurrent));
         pool.submit("Task-5", 3, createWrappedTask(5, activeCount, maxConcurrent));
-
+        // Test cancellation: Cancel Task-4 before it executes
+        System.out.println("\n[Test Action] Cancelling Task-4...");
+        pool.cancel("Task-4");
         Thread.sleep(3000);
         pool.shutdown();
 
-        System.out.println("\n--- Test Results ---");
+       System.out.println("\n--- Test Results ---");
         System.out.println("Max concurrent executions observed: " + maxConcurrent.get() + " (Must be <= " + workerCount + ")");
     }
 

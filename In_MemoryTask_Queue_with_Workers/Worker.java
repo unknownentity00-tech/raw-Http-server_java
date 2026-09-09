@@ -11,26 +11,22 @@ public class Worker implements  Runnable {
          this.taskQueue = taskQueue;
         this.name = name;
     }
-    /* Worker starts
-     ↓
-Wait for task
-     ↓
-Take task from queue
-     ↓
-Execute task
-     ↓
-   
-Task finished
- */
+  
 @Override 
    public  void run (){
         try{
              while (isRunning && !Thread.currentThread().isInterrupted()) {
                 Task task = taskQueue.take();
-               System.out.println("[" + name + "] Starting execution of " + task.getId() 
+                if(task.getState() == Task.State.CANCELLED){
+                    System.out.println("[" + name + "] Skipping cancelled task " + task.getId() 
+                    + " (Priority: " + task.getPriority() + ")");
+                    continue;
+                }
+                System.out.println("[" + name + "] Starting execution of " + task.getId() 
                     + " (Priority: " + task.getPriority() + ")");
                 task.run();
-             }
+            }
+              
         }catch(InterruptedException e){
             Thread.currentThread().interrupt();
         }
