@@ -2,27 +2,20 @@ package In_MemoryTask_Queue_with_Workers;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
 
 public class WorkerPool {
-   /*  
-the pool creates 3 workers.
+    public enum PoolState { RUNNING, SHUTDOWN }
 
-WorkerPool
-    │
-    ├── Worker-1
-    ├── Worker-2
-    └── Worker-3
-    */
-     private final TaskQueue taskQueue;
-     private final List<Worker> workers;
-     private final List<Thread> workerThreads;
+    private final TaskQueue taskQueue;
+    private final List<Worker> workers;
+    private final List<Thread> workerThreads;
+    private volatile PoolState state;
 
-   public WorkerPool(int workerCount){
-         this.taskQueue =  new TaskQueue();
+    public WorkerPool(int workerCount) {
+        this.taskQueue = new TaskQueue();
         this.workers = new ArrayList<>();
         this.workerThreads = new ArrayList<>();
+        this.state = PoolState.RUNNING;
 
         for (int i = 1; i <= workerCount; i++) {
             Worker worker = new Worker(taskQueue, "Worker-" + i);
@@ -31,16 +24,22 @@ WorkerPool
             workerThreads.add(thread);
             thread.start();
         }
-
-   }
+    }
 
     public void submit(String id, int priority, Runnable task) {
+        if (state == PoolState.SHUTDOWN) {
+            System.out.println("Submission rejected (" + id + "): Pool is SHUTDOWN.");
+            return;
+        }
         taskQueue.submit(id, priority, task);
     }
 
-    
+    public void cancel(String taskId) {
+        taskQueue.cancel(taskId);
+    }
 
-public void shutdown() {
+    public void shutdown() {
+        state = PoolState.SHUTDOWN;
         for (Worker worker : workers) {
             worker.stopWorker();
         }
@@ -48,6 +47,8 @@ public void shutdown() {
             thread.interrupt();
         }
     }
+
+    public PoolState getState() {
+        return state;
     }
-
-
+}
